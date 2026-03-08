@@ -1,0 +1,24 @@
+# Replays (regenerated with cambc run)
+*.replay26
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+.venv*/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+run_batch.py
+auto_improve.py
+analyse_maps.py
