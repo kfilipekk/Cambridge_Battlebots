@@ -11,7 +11,6 @@ This bot:
 """
 
 import random
-import sys
 from cambc import Controller, Direction, EntityType, Environment, Position
 
 CARDINALS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
@@ -75,10 +74,20 @@ class Player:
                 env = c.get_tile_env(tile)
                 if env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
                     if c.get_tile_building_id(tile) is None:
-                        dist = my_pos.distance_squared(tile)
-                        if dist < closest_dist:
-                            closest_dist = dist
-                            best_ore = tile
+                        ##ensure we don't try to place harvesters ON the map squares underneath our own 3x3 core footprint
+                        has_core = False
+                        for cx in range(-1, 2):
+                            for cy in range(-1, 2):
+                                c_pos = Position(tile.x + cx, tile.y + cy)
+                                if c.is_in_vision(c_pos):
+                                    bid = c.get_tile_building_id(c_pos)
+                                    if bid and c.get_entity_type(bid) == EntityType.CORE:
+                                        has_core = True
+                        if not has_core:
+                            dist = my_pos.distance_squared(tile)
+                            if dist < closest_dist:
+                                closest_dist = dist
+                                best_ore = tile
             if best_ore:
                 self.target_ore = best_ore
         
@@ -91,7 +100,6 @@ class Player:
             ##action radius allows us to build from slightly further, but strictly speaking 2 dist is ideal
             if dist <= 2:
                 if c.can_build_harvester(self.target_ore):
-                    print(f"[{c.get_id()}] Building harvester at {self.target_ore}", file=sys.stderr)
                     c.build_harvester(self.target_ore)
                     self.state = "RETURN" 
                     self.target_ore = None
@@ -115,8 +123,12 @@ class Player:
         if (next_pos.x < 0 or next_pos.x >= c.get_map_width() or
             next_pos.y < 0 or next_pos.y >= c.get_map_height()):
             self.heading = random.choice(CARDINALS)
-        elif not c.is_tile_passable(next_pos) and not c.is_tile_empty(next_pos):
-            self.heading = random.choice(CARDINALS)
+        elif not c.is_tile_passable(next_pos):
+            ##try to build a road if empty, otherwise turn
+            if c.is_tile_empty(next_pos):
+                pass ##try to step onto it (try_step will build road)
+            else:
+                self.heading = random.choice(CARDINALS)
         
         self.try_step(c, self.heading)
 
@@ -131,7 +143,11 @@ class Player:
 
         if not c.is_tile_passable(next_pos):
             if c.is_tile_empty(next_pos):
-                if c.can_build_road(next_pos):
+                ##ensure we have enough titanium to build roads!
+                ti, ax = c.get_global_resources()
+                scale = c.get_scale_percent() / 100.0
+                road_cost = int(1 * scale)
+                if ti >= road_cost and c.can_build_road(next_pos):
                     c.build_road(next_pos)
                 return 
             else:
