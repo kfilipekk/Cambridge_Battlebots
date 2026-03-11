@@ -32,15 +32,23 @@ class Player:
             self.run_builder(c)
 
     def run_core(self, c: Controller):
-        ##prevent economic collapse by limiting bots. Scale hits us +10% per bot!
-        if self.spawned_bots < 8 and c.get_action_cooldown() == 0:
-            ti, ax = c.get_global_resources()
-            scale = c.get_scale_percent() / 100.0
-            builder_cost = int(10 * scale)
+        if c.get_action_cooldown() != 0:
+            return
             
-            ##ensure we maintain a titanium buffer to build continuous roads/conveyors
-            if ti > builder_cost + 40:
+        ti, ax = c.get_global_resources()
+        scale = c.get_scale_percent() / 100.0
+        
+        if self.spawned_bots < 40:
+            builder_cost = int(10 * scale)
+            harvester_cost = int(40 * scale)
+            
+            ##ensure we hold enough titanium for every alive bot to build its harvester and return-path!
+            required_res = builder_cost + (harvester_cost + 40) * self.spawned_bots
+            
+            ##spawn up to 3 for free to kickstart, then STRICT scale restriction
+            if self.spawned_bots < 3 or ti > required_res:
                 spawn_dirs = list(CARDINALS)
+                import random
                 random.shuffle(spawn_dirs)
                 for d in spawn_dirs:
                     target = c.get_position().add(d)
@@ -79,7 +87,7 @@ class Player:
                         for cx in range(-1, 2):
                             for cy in range(-1, 2):
                                 c_pos = Position(tile.x + cx, tile.y + cy)
-                                if c.is_in_vision(c_pos):
+                                if c.is_in_vision(c_pos) and (0 <= c_pos.x < c.get_map_width()) and (0 <= c_pos.y < c.get_map_height()):
                                     bid = c.get_tile_building_id(c_pos)
                                     if bid and c.get_entity_type(bid) == EntityType.CORE:
                                         has_core = True
@@ -115,7 +123,9 @@ class Player:
                         best_d = d
                         best_d_dist = d_dist
                 if best_d:
-                    self.try_step(c, best_d)
+                    moved = self.try_step(c, best_d)
+                    if not moved:
+                        self.target_ore = None
                 return
                 
         next_pos = my_pos.add(self.heading)
@@ -126,7 +136,7 @@ class Player:
         elif not c.is_tile_passable(next_pos):
             ##try to build a road if empty, otherwise turn
             if c.is_tile_empty(next_pos):
-                pass ##try to step onto it (try_step will build road)
+                pass ###try to step onto it (try_step will build road)
             else:
                 self.heading = random.choice(CARDINALS)
         
@@ -139,7 +149,7 @@ class Player:
         if (next_pos.x < 0 or next_pos.x >= c.get_map_width() or
             next_pos.y < 0 or next_pos.y >= c.get_map_height()):
             self.heading = random.choice(CARDINALS)
-            return
+            return False
 
         if not c.is_tile_passable(next_pos):
             if c.is_tile_empty(next_pos):
@@ -149,18 +159,19 @@ class Player:
                 road_cost = int(1 * scale)
                 if ti >= road_cost and c.can_build_road(next_pos):
                     c.build_road(next_pos)
-                return 
+                return True 
             else:
                 self.heading = random.choice(CARDINALS)
-                return
+                return False
 
         if c.can_move(d):
             ##prevent mindless backtracking
             if self.history and self.history[-1] == next_pos:
                 self.heading = random.choice(CARDINALS)
-                return
+                return False
             c.move(d)
-            self.history.append(my_pos) 
+            self.history.append(my_pos)
+            return True 
 
     def do_return(self, c: Controller):
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
@@ -212,3 +223,4 @@ class Player:
         if c.can_move(d):
             c.move(d)
             self.history.pop()
+        pass
