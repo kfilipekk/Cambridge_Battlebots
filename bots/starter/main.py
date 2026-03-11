@@ -1,20 +1,36 @@
-"""Starter bot - a simple example to demonstrate usage of the Controller API.
-
-Each unit gets its own Player instance; the engine calls run() once per round.
-Use Controller.get_entity_type() to branch on what kind of unit you are.
-
-This bot:
-  - Core: spawns up to 3 builder bots on random adjacent tiles
-  - Builder bot: builds a harvester on any adjacent ore tile, then moves in a
-    random direction (laying a road first so the tile is passable), and places
-    a marker recording the current round number
-"""
+"""Starter bot - a simple example to demonstrate usage of the Controller API."""
 
 import random
+import collections
 from cambc import Controller, Direction, EntityType, Environment, Position
 
 CARDINALS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
 ALL_DIRS = [d for d in Direction if d != Direction.CENTRE]
+
+
+def get_astar_next_direction(c, start, target):
+    q = collections.deque([(start, [])])
+    visited = { (start.x, start.y) }
+    
+    while q:
+        curr, path = q.popleft()
+        if curr == target:
+            return path[0] if path else None
+            
+        if len(path) > 15: 
+            return path[0] if path else None
+
+        for d in CARDINALS:
+            np = curr.add(d)
+            if 0 <= np.x < c.get_map_width() and 0 <= np.y < c.get_map_height():
+                if (np.x, np.y) not in visited:
+                    ##only check tiles within vision range to avoid GameError
+                    if start.distance_squared(np) <= 20: 
+                        if c.is_tile_passable(np) or c.is_tile_empty(np) or np == target:
+                            visited.add((np.x, np.y))
+                            q.append((np, path + [d]))
+    return None
+
 
 class Player:
     def __init__(self):
@@ -23,6 +39,7 @@ class Player:
         self.heading = None
         self.target_ore = None
         self.spawned_bots = 0
+        self.role = "MINER"
         
     def run(self, c: Controller) -> None:
         etype = c.get_entity_type()
@@ -38,17 +55,15 @@ class Player:
         ti, ax = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
         
-        if self.spawned_bots < 40:
+        ##dYNAMIC CAP: Start with 6, but allow 1 more bot for every 400 Titanium in the bank (Max 25 bots)
+        dynamic_bot_cap = min(25, 6 + int(ti / 400))
+        
+        if self.spawned_bots < dynamic_bot_cap:
             builder_cost = int(10 * scale)
-            harvester_cost = int(40 * scale)
+            harvester_cost = int(80 * scale)
             
-            ##ensure we hold enough titanium for every alive bot to build its harvester and return-path!
-            required_res = builder_cost + (harvester_cost + 40) * self.spawned_bots
-            
-            ##spawn up to 3 for free to kickstart, then STRICT scale restriction
-            if self.spawned_bots < 3 or ti > required_res:
+            if ti > builder_cost + harvester_cost + (20 * scale):
                 spawn_dirs = list(CARDINALS)
-                import random
                 random.shuffle(spawn_dirs)
                 for d in spawn_dirs:
                     target = c.get_position().add(d)
@@ -60,14 +75,71 @@ class Player:
     def run_builder(self, c: Controller):
         if self.state == "INIT":
             self.state = "WANDER"
-            self.heading = random.choice(CARDINALS)
             self.history.append(c.get_position())
+            self.role = "MINER" if c.get_current_round() < 500 else "SABOTEUR"
+            
+            ##sCATTER PROTOCOL: When spawning, try to pick a direction that DOES NOT have a conveyor
+            valid_dirs = []
+            for d in CARDINALS:
+                np = c.get_position().add(d)
+                if c.is_tile_passable(np) and c.get_tile_building_id(np) is None:
+                    valid_dirs.append(d)
+            self.heading = random.choice(valid_dirs) if valid_dirs else random.choice(CARDINALS)
+
+        if self.role == "SABOTEUR":
+            self.do_sabotage(c)
+            return
 
         if self.state == "WANDER":
+            ##if we just arrived back at the core, apply the Scatter Protocol again
+            if len(self.history) <= 1:
+                valid_dirs = []
+                for d in CARDINALS:
+                    np = c.get_position().add(d)
+                    if c.is_tile_passable(np) and c.get_tile_building_id(np) is None:
+                        valid_dirs.append(d)
+                if valid_dirs and self.heading not in valid_dirs:
+                     self.heading = random.choice(valid_dirs)
+
             self.do_wander(c)
+            
         elif self.state == "RETURN":
             self.do_return(c)
             
+    def do_sabotage(self, c: Controller):
+        if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
+            return
+            
+        my_pos = c.get_position()
+        
+        ##tHE SYMMETRY TRICK: Calculate enemy core location mathematically
+        ##use our spawn location (first item in history) to find our side's core
+        start_pos = self.history[0] if self.history else my_pos
+        enemy_x = c.get_map_width() - 1 - start_pos.x
+        enemy_y = c.get_map_height() - 1 - start_pos.y
+        enemy_core_guess = Position(enemy_x, enemy_y)
+
+        ##dROP TURRETS: If we are close to the target, start shooting!
+        ##if we are within 12 tiles of the calculated enemy core, we are in the hot zone
+        if my_pos.distance_squared(enemy_core_guess) < 144: 
+            ti, _ = c.get_global_resources()
+            scale = c.get_scale_percent() / 100.0
+            gunner_cost = int(10 * scale)
+            
+            if ti > gunner_cost + 50: ##leave a buffer so we don't drain the economy
+                for d in CARDINALS:
+                    build_target = my_pos.add(d)
+                    if c.can_build_gunner(build_target, d):
+                        c.build_gunner(build_target, d)
+                        ##self-destruct after placing a turret to do 20 damage to anything nearby!
+                        c.self_destruct() 
+                        return
+        
+        ##mARCH: If we aren't there yet, keep moving directly toward the target
+        d = get_astar_next_direction(c, my_pos, enemy_core_guess)
+        if d:
+            self.try_step(c, d)
+
     def do_wander(self, c: Controller):
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
             return
@@ -82,6 +154,7 @@ class Player:
                 env = c.get_tile_env(tile)
                 if env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
                     if c.get_tile_building_id(tile) is None:
+                        dist_penalty = -99999 if env == Environment.ORE_AXIONITE else 0
                         ##ensure we don't try to place harvesters ON the map squares underneath our own 3x3 core footprint
                         has_core = False
                         for cx in range(-1, 2):
@@ -92,7 +165,7 @@ class Player:
                                     if bid and c.get_entity_type(bid) == EntityType.CORE:
                                         has_core = True
                         if not has_core:
-                            dist = my_pos.distance_squared(tile)
+                            dist = my_pos.distance_squared(tile) + dist_penalty
                             if dist < closest_dist:
                                 closest_dist = dist
                                 best_ore = tile
@@ -128,50 +201,54 @@ class Player:
                         self.target_ore = None
                 return
                 
-        next_pos = my_pos.add(self.heading)
-        ##check map bounds before querying tiles to avoid GameError
-        if (next_pos.x < 0 or next_pos.x >= c.get_map_width() or
-            next_pos.y < 0 or next_pos.y >= c.get_map_height()):
-            self.heading = random.choice(CARDINALS)
-        elif not c.is_tile_passable(next_pos):
-            ##try to build a road if empty, otherwise turn
-            if c.is_tile_empty(next_pos):
-                pass ###try to step onto it (try_step will build road)
-            else:
-                self.heading = random.choice(CARDINALS)
-        
+        ##move in straight lines based on the current heading
         self.try_step(c, self.heading)
 
     def try_step(self, c: Controller, d: Direction):
         my_pos = c.get_position()
         next_pos = my_pos.add(d)
         
+        ##bounds Check
         if (next_pos.x < 0 or next_pos.x >= c.get_map_width() or
             next_pos.y < 0 or next_pos.y >= c.get_map_height()):
-            self.heading = random.choice(CARDINALS)
+            self._turn()
             return False
 
+        ##path Check
         if not c.is_tile_passable(next_pos):
             if c.is_tile_empty(next_pos):
                 ##ensure we have enough titanium to build roads!
-                ti, ax = c.get_global_resources()
+                ti, _ = c.get_global_resources()
                 scale = c.get_scale_percent() / 100.0
                 road_cost = int(1 * scale)
+                
                 if ti >= road_cost and c.can_build_road(next_pos):
                     c.build_road(next_pos)
                 return True 
             else:
-                self.heading = random.choice(CARDINALS)
+                ##hit a wall or building, turn 90 degrees cleanly
+                self._turn()
                 return False
 
+        ##move and Record History (Without Loops!)
         if c.can_move(d):
-            ##prevent mindless backtracking
-            if self.history and self.history[-1] == next_pos:
-                self.heading = random.choice(CARDINALS)
-                return False
+            if next_pos in self.history:
+                ##we walked in a circle! Truncate the history to cut out the loop
+                idx = self.history.index(next_pos)
+                self.history = self.history[:idx+1]
+            else:
+                self.history.append(my_pos)
+                
             c.move(d)
-            self.history.append(my_pos)
             return True 
+        
+        return False
+
+    def _turn(self):
+        ##instead of randomly bouncing, turn left or right 90 degrees cleanly
+        idx = CARDINALS.index(self.heading)
+        offset = random.choice([-1, 1])
+        self.heading = CARDINALS[(idx + offset) % 4]
 
     def do_return(self, c: Controller):
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
@@ -218,9 +295,8 @@ class Player:
             if c.can_build_conveyor(my_pos, d):
                 c.build_conveyor(my_pos, d)
             else:
-                return ###can't afford it yet, halt and wait
+                return ##can't afford it yet, halt and wait
 
         if c.can_move(d):
             c.move(d)
             self.history.pop()
-        pass
