@@ -72,11 +72,72 @@ class Player:
                         self.spawned_bots += 1
                         break
 
+    def check_and_build_foundry(self, c: Controller):
+        ##eCONOMY CHECK
+        ti, ax = c.get_global_resources()
+        scale = c.get_scale_percent() / 100.0
+        
+        ##foundry base is 120. We want a MASSIVE buffer (e.g., 500 Ti)
+        ##so doubling our scaling doesn't instantly bankrupt us.
+        if ti < (120 * scale) + 500: 
+            return False
+            
+        ##we need Raw Axionite to actually use the Foundry, so don't build it too early
+        if ax < 10:
+            return False
+
+        core_pos = self.history[0] if self.history else c.get_position()
+        
+        ##mARKER CHECK (The Radio Broadcast)
+        ##scan all nearby entities to see if a marker with our secret code exists
+        foundry_claimed = False
+        for eid in c.get_nearby_entities():
+            try:
+                ##safely check if this entity is a marker and read it
+                if c.get_entity_type(eid) == getattr(EntityType, 'MARKER', None):
+                    if c.get_marker_value(eid) == 999:
+                        foundry_claimed = True
+                        break
+            except Exception:
+                pass
+                
+        ##pHYSICAL FAILSAFE (Look with our eyes)
+        ##just in case the marker was destroyed by an enemy or a glitch
+        for tile in c.get_nearby_tiles(25):
+            bid = c.get_tile_building_id(tile)
+            if bid and c.get_entity_type(bid) == getattr(EntityType, 'AXIONITE_FOUNDRY', None):
+                foundry_claimed = True
+                break
+
+        if foundry_claimed:
+            return False ##someone else is handling it. Abort!
+            
+        ##cLAIM IT AND BUILD
+        ##drop the marker to claim the job
+        if hasattr(c, 'can_place_marker') and c.can_place_marker(core_pos):
+            c.place_marker(core_pos, 999)
+            
+        ##find an empty tile near the core to build it safely behind our lines
+        for d in CARDINALS:
+            build_pos = core_pos.add(d)
+            if c.is_tile_empty(build_pos):
+                ##the API pattern matches the building name
+                if hasattr(c, 'can_build_axionite_foundry') and c.can_build_axionite_foundry(build_pos):
+                    c.build_axionite_foundry(build_pos)
+                    return True
+                    
+        return False
+
     def run_builder(self, c: Controller):
         if self.state == "INIT":
             self.state = "WANDER"
             self.history.append(c.get_position())
-            self.role = "MINER" if c.get_current_round() < 500 else "SABOTEUR"
+            
+            ##roles: 80% Miners, 20% Saboteurs
+            if random.random() < 0.2 and c.get_current_round() > 300:
+                self.role = "SABOTEUR"
+            else:
+                self.role = "MINER"
             
             ##sCATTER PROTOCOL: When spawning, try to pick a direction that DOES NOT have a conveyor
             valid_dirs = []
@@ -91,6 +152,10 @@ class Player:
             return
 
         if self.state == "WANDER":
+            ##---> NEW: Check if we should stop and build a Foundry! <---
+            if self.check_and_build_foundry(c):
+                return ##we spent our action building the Foundry, end turn
+
             ##if we just arrived back at the core, apply the Scatter Protocol again
             if len(self.history) <= 1:
                 valid_dirs = []
