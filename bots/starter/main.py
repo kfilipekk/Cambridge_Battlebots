@@ -55,14 +55,14 @@ class Player:
         ti, ax = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
         
-        ##dYNAMIC CAP: Start with 6, but allow 1 more bot for every 400 Titanium in the bank (Max 25 bots)
         dynamic_bot_cap = min(25, 6 + int(ti / 400))
         
         if self.spawned_bots < dynamic_bot_cap:
             builder_cost = int(10 * scale)
             harvester_cost = int(80 * scale)
             
-            if ti > builder_cost + harvester_cost + (20 * scale):
+            ##iNCREASED BUFFER: Keep 100 Ti in reserve for active conveyor projects
+            if ti > builder_cost + harvester_cost + (100 * scale):
                 spawn_dirs = list(CARDINALS)
                 random.shuffle(spawn_dirs)
                 for d in spawn_dirs:
@@ -243,12 +243,20 @@ class Player:
 
         if self.target_ore:
             dist = my_pos.distance_squared(self.target_ore)
-            ##action radius allows us to build from slightly further, but strictly speaking 2 dist is ideal
             if dist <= 2:
-                if c.can_build_harvester(self.target_ore):
+                ##check if we can afford the Harvester AND the conveyor belt back!
+                ti, _ = c.get_global_resources()
+                scale = c.get_scale_percent() / 100.0
+                project_cost = int(80 * scale) + (len(self.history) * int(3 * scale))
+                
+                if ti >= project_cost and c.can_build_harvester(self.target_ore):
                     c.build_harvester(self.target_ore)
                     self.state = "RETURN" 
                     self.target_ore = None
+                else:
+                    ##we can't afford the FULL project yet. Step aside and wait!
+                    self._turn()
+                    self.try_step(c, self.heading)
                 return
             else:
                 ##seek ore ONLY using Cardinals so it matches conveyor directions!
@@ -282,12 +290,12 @@ class Player:
         ##path Check
         if not c.is_tile_passable(next_pos):
             if c.is_tile_empty(next_pos):
-                ##ensure we have enough titanium to build roads!
                 ti, _ = c.get_global_resources()
                 scale = c.get_scale_percent() / 100.0
                 road_cost = int(1 * scale)
                 
-                if ti >= road_cost and c.can_build_road(next_pos):
+                ##rEQUIRE A BUFFER OF 15 Ti: Don't build roads if it starves returning bots!
+                if ti >= road_cost + (15 * scale) and c.can_build_road(next_pos):
                     c.build_road(next_pos)
                 return True 
             else:
@@ -295,10 +303,9 @@ class Player:
                 self._turn()
                 return False
 
-        ##move and Record History (Without Loops!)
+        ##move and Record History
         if c.can_move(d):
             if next_pos in self.history:
-                ##we walked in a circle! Truncate the history to cut out the loop
                 idx = self.history.index(next_pos)
                 self.history = self.history[:idx+1]
             else:
@@ -306,8 +313,12 @@ class Player:
                 
             c.move(d)
             return True 
-        
-        return False
+        else:
+            ##---> TRAFFIC JAM FIX <---
+            ##the tile is passable, but we can't move. Another bot is blocking us!
+            ##turn 90 degrees to sidestep them.
+            self._turn()
+            return False
 
     def _turn(self):
         ##instead of randomly bouncing, turn left or right 90 degrees cleanly
