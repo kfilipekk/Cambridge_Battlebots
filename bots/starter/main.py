@@ -8,30 +8,6 @@ CARDINALS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
 ALL_DIRS = [d for d in Direction if d != Direction.CENTRE]
 
 
-def get_astar_next_direction(c, start, target):
-    q = collections.deque([(start, [])])
-    visited = { (start.x, start.y) }
-    
-    while q:
-        curr, path = q.popleft()
-        if curr == target:
-            return path[0] if path else None
-            
-        if len(path) > 15: 
-            return path[0] if path else None
-
-        for d in CARDINALS:
-            np = curr.add(d)
-            if 0 <= np.x < c.get_map_width() and 0 <= np.y < c.get_map_height():
-                if (np.x, np.y) not in visited:
-                    ##only check tiles within vision range to avoid GameError
-                    if start.distance_squared(np) <= 20: 
-                        if c.is_tile_passable(np) or c.is_tile_empty(np) or np == target:
-                            visited.add((np.x, np.y))
-                            q.append((np, path + [d]))
-    return None
-
-
 class Player:
     def __init__(self):
         self.state = "INIT"
@@ -200,10 +176,15 @@ class Player:
                         c.self_destruct() 
                         return
         
-        ##mARCH: If we aren't there yet, keep moving directly toward the target
-        d = get_astar_next_direction(c, my_pos, enemy_core_guess)
-        if d:
-            self.try_step(c, d)
+        ##rELENTLESS MARCH
+        ##use the built-in compass to get the exact direction to the enemy
+        best_d = my_pos.direction_to(enemy_core_guess)
+        
+        ##try to step directly toward the enemy
+        if best_d and not self.try_step(c, best_d):
+            ##if our direct path is blocked (by a wall, ore, or another bot),
+            ##sidestep using our wander heading to easily pathfind around it.
+            self.try_step(c, self.heading)
 
     def do_wander(self, c: Controller):
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
