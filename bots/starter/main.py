@@ -31,13 +31,16 @@ class Player:
         ti, ax = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
         
-        dynamic_bot_cap = min(25, 6 + int(ti / 400))
+        ##pREVENT THE BANK RUN: Strictly limit to 2 bots until we have active income!
+        if ti < 500:
+            dynamic_bot_cap = 2
+        else:
+            dynamic_bot_cap = min(25, 4 + int(ti / 400))
         
         if self.spawned_bots < dynamic_bot_cap:
             builder_cost = int(10 * scale)
             harvester_cost = int(80 * scale)
             
-            ##iNCREASED BUFFER: Keep 100 Ti in reserve for active conveyor projects
             if ti > builder_cost + harvester_cost + (100 * scale):
                 spawn_dirs = list(CARDINALS)
                 random.shuffle(spawn_dirs)
@@ -201,7 +204,6 @@ class Player:
                 if env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
                     if c.get_tile_building_id(tile) is None:
                         dist_penalty = -99999 if env == Environment.ORE_AXIONITE else 0
-                        ##ensure we don't try to place harvesters ON the map squares underneath our own 3x3 core footprint
                         has_core = False
                         for cx in range(-1, 2):
                             for cy in range(-1, 2):
@@ -217,15 +219,14 @@ class Player:
                                 best_ore = tile
             if best_ore:
                 self.target_ore = best_ore
-        
-        ##drop target if someone built on it before we got there
+
         if self.target_ore and c.get_tile_building_id(self.target_ore) is not None:
             self.target_ore = None
 
         if self.target_ore:
             dist = my_pos.distance_squared(self.target_ore)
-            if dist <= 2:
-                ##check if we can afford the Harvester AND the conveyor belt back!
+            ##must be exactly cardinal distance 1 to ensure conveyor connects
+            if dist == 1:
                 ti, _ = c.get_global_resources()
                 scale = c.get_scale_percent() / 100.0
                 project_cost = int(80 * scale) + (len(self.history) * int(3 * scale))
@@ -235,12 +236,10 @@ class Player:
                     self.state = "RETURN" 
                     self.target_ore = None
                 else:
-                    ##we can't afford the FULL project yet. Step aside and wait!
                     self._turn()
                     self.try_step(c, self.heading)
                 return
             else:
-                ##seek ore ONLY using Cardinals so it matches conveyor directions!
                 best_d = None
                 best_d_dist = 99999
                 for d in CARDINALS:
@@ -255,7 +254,6 @@ class Player:
                         self.target_ore = None
                 return
                 
-        ##move in straight lines based on the current heading
         self.try_step(c, self.heading)
 
     def try_step(self, c: Controller, d: Direction):
@@ -311,19 +309,27 @@ class Player:
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
             return
             
+        my_pos = c.get_position()
+        
+        ##tHE CURE FOR CORE TRAFFIC JAMS: Check if we are standing on the Core
+        my_building = c.get_tile_building_id(my_pos)
+        if my_building is not None and c.get_entity_type(my_building) == EntityType.CORE:
+            ##we made it home! Truncate the history instantly and get back to work.
+            self.history = [my_pos]
+            self.state = "WANDER"
+            return
+
         if len(self.history) == 0:
             self.state = "WANDER"
-            self.history.append(c.get_position())
+            self.history.append(my_pos)
             return
             
-        my_pos = c.get_position()
         target_pos = self.history[-1]
         
         if my_pos == target_pos:
             self.history.pop()
             return
 
-        ##explicitly find which Cardinal matches our history regression
         d = None
         for cd in CARDINALS:
             if my_pos.add(cd) == target_pos:
@@ -334,25 +340,29 @@ class Player:
             self.history.pop()
             return
 
-        my_building = c.get_tile_building_id(my_pos)
         needs_conveyor = True
-        
         if my_building is not None:
             b_type = c.get_entity_type(my_building)
-            ##destroy our old road freely to place a conveyor
-            if b_type == EntityType.ROAD:
-                if c.can_destroy(my_pos):
-                    c.destroy(my_pos)
-            elif b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
+            if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
                 needs_conveyor = False
             elif b_type in (EntityType.CORE, EntityType.HARVESTER):
                 needs_conveyor = False
 
         if needs_conveyor:
+            ##check costs BEFORE destroying the road beneath us!
+            ti, _ = c.get_global_resources()
+            scale = c.get_scale_percent() / 100.0
+            if ti < int(3 * scale):
+                return ##can't afford the conveyor yet, halt and wait.
+                
+            if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
+                if c.can_destroy(my_pos):
+                    c.destroy(my_pos)
+                    
             if c.can_build_conveyor(my_pos, d):
                 c.build_conveyor(my_pos, d)
             else:
-                return ##can't afford it yet, halt and wait
+                return 
 
         if c.can_move(d):
             c.move(d)
