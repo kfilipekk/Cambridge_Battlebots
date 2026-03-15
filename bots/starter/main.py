@@ -31,17 +31,18 @@ class Player:
         ti, ax = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
         
-        ##pREVENT THE BANK RUN: Strictly limit to 2 bots until we have active income!
-        if ti < 500:
-            dynamic_bot_cap = 2
-        else:
-            dynamic_bot_cap = min(25, 4 + int(ti / 400))
+        ##tHE ECONOMIC BOOM: Start with 6 workers immediately to explore fast!
+        ##then add 1 more bot for every 150 Ti we bank. Max out at 35 bots.
+        dynamic_bot_cap = min(35, 6 + int(ti / 150))
         
         if self.spawned_bots < dynamic_bot_cap:
             builder_cost = int(10 * scale)
             harvester_cost = int(80 * scale)
             
-            if ti > builder_cost + harvester_cost + (100 * scale):
+            ##keep a smaller buffer early on so we don't stall early expansion
+            buffer = 30 * scale if ti < 500 else 100 * scale 
+            
+            if ti > builder_cost + harvester_cost + buffer:
                 spawn_dirs = list(CARDINALS)
                 random.shuffle(spawn_dirs)
                 for d in spawn_dirs:
@@ -52,36 +53,28 @@ class Player:
                         break
 
     def check_and_build_foundry(self, c: Controller):
-        ##eCONOMY CHECK
         ti, ax = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
         
-        ##foundry base is 120. We want a MASSIVE buffer (e.g., 500 Ti)
-        ##so doubling our scaling doesn't instantly bankrupt us.
-        if ti < (120 * scale) + 500: 
+        ##wait for a massive titanium reserve before building
+        ##if we double our costs, we need cash to survive the transition.
+        if ti < (120 * scale) + 1000: 
             return False
             
-        ##we need Raw Axionite to actually use the Foundry, so don't build it too early
+        ##we need Raw Axionite flowing into the core first
         if ax < 10:
             return False
 
         core_pos = self.history[0] if self.history else c.get_position()
         
-        ##mARKER CHECK (The Radio Broadcast)
-        ##scan all nearby entities to see if a marker with our secret code exists
+        ##ensure we only ever build one foundry
         foundry_claimed = False
         for eid in c.get_nearby_entities():
-            try:
-                ##safely check if this entity is a marker and read it
-                if c.get_entity_type(eid) == getattr(EntityType, 'MARKER', None):
-                    if c.get_marker_value(eid) == 999:
-                        foundry_claimed = True
-                        break
-            except Exception:
-                pass
-                
-        ##pHYSICAL FAILSAFE (Look with our eyes)
-        ##just in case the marker was destroyed by an enemy or a glitch
+            if c.get_entity_type(eid) == getattr(EntityType, 'MARKER', None):
+                if c.get_marker_value(eid) == 999:
+                    foundry_claimed = True
+                    break
+                    
         for tile in c.get_nearby_tiles(25):
             bid = c.get_tile_building_id(tile)
             if bid and c.get_entity_type(bid) == getattr(EntityType, 'AXIONITE_FOUNDRY', None):
@@ -89,18 +82,15 @@ class Player:
                 break
 
         if foundry_claimed:
-            return False ##someone else is handling it. Abort!
+            return False 
             
-        ##cLAIM IT AND BUILD
-        ##drop the marker to claim the job
-        if hasattr(c, 'can_place_marker') and c.can_place_marker(core_pos):
+        ##claim and build the foundry
+        if c.can_place_marker(core_pos):
             c.place_marker(core_pos, 999)
             
-        ##find an empty tile near the core to build it safely behind our lines
         for d in CARDINALS:
             build_pos = core_pos.add(d)
             if c.is_tile_empty(build_pos):
-                ##the API pattern matches the building name
                 if hasattr(c, 'can_build_axionite_foundry') and c.can_build_axionite_foundry(build_pos):
                     c.build_axionite_foundry(build_pos)
                     return True
@@ -112,13 +102,17 @@ class Player:
             self.state = "WANDER"
             self.history.append(c.get_position())
             
-            ##roles: 80% Miners, 20% Saboteurs
-            if random.random() < 0.2 and c.get_current_round() > 300:
+            ##tHE NEW ROSTER:
+            round_num = c.get_current_round()
+            roll = random.random()
+            
+            if round_num > 700 and roll < 0.25:
                 self.role = "SABOTEUR"
+            elif round_num > 250 and roll < 0.40: ##15% chance to be a Refiner after early game
+                self.role = "REFINER"
             else:
                 self.role = "MINER"
             
-            ##sCATTER PROTOCOL: When spawning, try to pick a direction that DOES NOT have a conveyor
             valid_dirs = []
             for d in CARDINALS:
                 np = c.get_position().add(d)
@@ -131,9 +125,10 @@ class Player:
             return
 
         if self.state == "WANDER":
-            ##---> NEW: Check if we should stop and build a Foundry! <---
-            if self.check_and_build_foundry(c):
-                return ##we spent our action building the Foundry, end turn
+            ##anyone wandering near the base can help build the foundry
+            if len(self.history) <= 3:
+                if self.check_and_build_foundry(c):
+                    return ##action spent!
 
             ##if we just arrived back at the core, apply the Scatter Protocol again
             if len(self.history) <= 1:
@@ -150,6 +145,42 @@ class Player:
         elif self.state == "RETURN":
             self.do_return(c)
             
+    def build_bunker(self, c: Controller, target_pos: Position, facing_dir: Direction):
+        """
+        Builds a Splitter facing the enemy, and tries to build 3 Gunners around it.
+        Assumes the conveyor belt is coming in from behind the Splitter.
+        """
+        ti, _ = c.get_global_resources()
+        scale = c.get_scale_percent() / 100.0
+        
+        ##a Splitter (6) + 3 Gunners (10 each) = 36 base Ti.
+        ##let's require a safe buffer of 60 Ti to start construction.
+        if ti < int(60 * scale):
+            return False
+
+        ##build the Splitter
+        if c.can_build_splitter(target_pos, facing_dir):
+            c.build_splitter(target_pos, facing_dir)
+
+        ##calculate the three output directions
+        ##if facing NORTH, outputs are NORTH, EAST, WEST. Back is SOUTH.
+        idx = CARDINALS.index(facing_dir)
+        left_dir = CARDINALS[(idx - 1) % 4]
+        right_dir = CARDINALS[(idx + 1) % 4]
+        
+        output_dirs = [facing_dir, left_dir, right_dir]
+        
+        ##slap turrets on the outputs!
+        built_any = False
+        for d in output_dirs:
+            turret_pos = target_pos.add(d)
+            ##make the turrets face the exact same way as the bunker
+            if c.can_build_gunner(turret_pos, facing_dir):
+                c.build_gunner(turret_pos, facing_dir)
+                built_any = True
+                
+        return built_any
+
     def do_sabotage(self, c: Controller):
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
             return
@@ -163,21 +194,21 @@ class Player:
         enemy_y = c.get_map_height() - 1 - start_pos.y
         enemy_core_guess = Position(enemy_x, enemy_y)
 
-        ##dROP TURRETS: If we are close to the target, start shooting!
-        ##if we are within 12 tiles of the calculated enemy core, we are in the hot zone
-        if my_pos.distance_squared(enemy_core_guess) < 144: 
-            ti, _ = c.get_global_resources()
-            scale = c.get_scale_percent() / 100.0
-            gunner_cost = int(10 * scale)
+        ##dROP TURRETS: If we are in the hot zone (within 15 tiles)
+        if my_pos.distance_squared(enemy_core_guess) < 225: 
+            ##get the direction pointing AT the enemy core
+            attack_dir = my_pos.direction_to(enemy_core_guess)
             
-            if ti > gunner_cost + 50: ##leave a buffer so we don't drain the economy
-                for d in CARDINALS:
-                    build_target = my_pos.add(d)
-                    if c.can_build_gunner(build_target, d):
-                        c.build_gunner(build_target, d)
-                        ##self-destruct after placing a turret to do 20 damage to anything nearby!
-                        c.self_destruct() 
-                        return
+            if attack_dir:
+                ##step forward once so we have room to build behind us
+                build_pos = my_pos.add(attack_dir) 
+                
+                if self.build_bunker(c, build_pos, attack_dir):
+                    ##now that the bunker is placed, step backward and start laying
+                    ##a standard conveyor belt to bring ammo to the Splitter!
+                    self.history = [self.history[0], my_pos] 
+                    self.state = "RETURN" 
+                return
         
         ##rELENTLESS MARCH
         ##use the built-in compass to get the exact direction to the enemy
@@ -203,7 +234,12 @@ class Player:
                 env = c.get_tile_env(tile)
                 if env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
                     if c.get_tile_building_id(tile) is None:
-                        dist_penalty = -99999 if env == Environment.ORE_AXIONITE else 0
+                        ##miners prioritize Titanium. Refiners prioritize Axionite!
+                        if self.role == "REFINER":
+                            dist_penalty = -99999 if env == Environment.ORE_AXIONITE else 99999
+                        else:
+                            dist_penalty = -99999 if env == Environment.ORE_TITANIUM else 0
+                            
                         has_core = False
                         for cx in range(-1, 2):
                             for cy in range(-1, 2):
@@ -220,8 +256,10 @@ class Player:
             if best_ore:
                 self.target_ore = best_ore
 
-        if self.target_ore and c.get_tile_building_id(self.target_ore) is not None:
-            self.target_ore = None
+        ##drop target if someone built on it (BUT ONLY check if we can actually see it!)
+        if self.target_ore and c.is_in_vision(self.target_ore):
+            if c.get_tile_building_id(self.target_ore) is not None:
+                self.target_ore = None
 
         if self.target_ore:
             dist = my_pos.distance_squared(self.target_ore)
@@ -258,46 +296,56 @@ class Player:
 
     def try_step(self, c: Controller, d: Direction):
         my_pos = c.get_position()
-        next_pos = my_pos.add(d)
         
-        ##bounds Check
-        if (next_pos.x < 0 or next_pos.x >= c.get_map_width() or
-            next_pos.y < 0 or next_pos.y >= c.get_map_height()):
-            self._turn()
-            return False
+        free_dirs = []
+        empty_dirs = []
+        
+        for check_d in CARDINALS:
+            np = my_pos.add(check_d)
+            if 0 <= np.x < c.get_map_width() and 0 <= np.y < c.get_map_height():
+                ##avoid mindless 1-tile backtracking
+                if len(self.history) < 2 or np != self.history[-2]:
+                    ##cRUCIAL FIX: can_move actually checks if another bot is blocking us!
+                    if c.can_move(check_d): 
+                        free_dirs.append(check_d)
+                    elif c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
+                        empty_dirs.append(check_d)
 
-        ##path Check
-        if not c.is_tile_passable(next_pos):
-            if c.is_tile_empty(next_pos):
-                ti, _ = c.get_global_resources()
-                scale = c.get_scale_percent() / 100.0
-                road_cost = int(1 * scale)
-                
-                ##rEQUIRE A BUFFER OF 15 Ti: Don't build roads if it starves returning bots!
-                if ti >= road_cost + (15 * scale) and c.can_build_road(next_pos):
-                    c.build_road(next_pos)
-                return True 
-            else:
-                ##hit a wall or building, turn 90 degrees cleanly
-                self._turn()
-                return False
-
-        ##move and Record History
-        if c.can_move(d):
-            if next_pos in self.history:
-                idx = self.history.index(next_pos)
-                self.history = self.history[:idx+1]
-            else:
-                self.history.append(my_pos)
-                
+        ##priority 1: Walk on existing free roads/conveyors
+        if d in free_dirs:
             c.move(d)
-            return True 
-        else:
-            ##---> TRAFFIC JAM FIX <---
-            ##the tile is passable, but we can't move. Another bot is blocking us!
-            ##turn 90 degrees to sidestep them.
-            self._turn()
-            return False
+            self.history.append(my_pos)
+            return True
+        elif free_dirs:
+            ##our preferred direction is blocked, but there is another free road!
+            self.heading = random.choice(free_dirs)
+            c.move(self.heading)
+            self.history.append(my_pos)
+            return True
+            
+        ##priority 2: We reached the end of the road. Pave into the unknown.
+        build_dir = None
+        if d in empty_dirs:
+            build_dir = d
+        elif empty_dirs:
+            build_dir = random.choice(empty_dirs)
+            self.heading = build_dir
+            
+        if build_dir:
+            np = my_pos.add(build_dir)
+            ti, _ = c.get_global_resources()
+            scale = c.get_scale_percent() / 100.0
+            
+            if ti >= int(1 * scale) + (15 * scale) and c.can_build_road(np):
+                c.build_road(np)
+            return True
+            
+        ##priority 3: We are completely boxed in by bots or walls!
+        ##step aside and wait for traffic to clear.
+        self._turn()
+        if len(self.history) > 1:
+            self.history.pop() 
+        return False
 
     def _turn(self):
         ##instead of randomly bouncing, turn left or right 90 degrees cleanly
@@ -310,15 +358,8 @@ class Player:
             return
             
         my_pos = c.get_position()
-        
-        ##tHE CURE FOR CORE TRAFFIC JAMS: Check if we are standing on the Core
         my_building = c.get_tile_building_id(my_pos)
-        if my_building is not None and c.get_entity_type(my_building) == EntityType.CORE:
-            ##we made it home! Truncate the history instantly and get back to work.
-            self.history = [my_pos]
-            self.state = "WANDER"
-            return
-
+        
         if len(self.history) == 0:
             self.state = "WANDER"
             self.history.append(my_pos)
@@ -326,6 +367,44 @@ class Player:
             
         target_pos = self.history[-1]
         
+        ##eARLY CORE ARRIVAL FIX
+        ##if our next step is the Core, don't try to cram inside it!
+        target_building = c.get_tile_building_id(target_pos)
+        if target_building is not None and c.get_entity_type(target_building) == EntityType.CORE:
+            d = None
+            for cd in CARDINALS:
+                if my_pos.add(cd) == target_pos:
+                    d = cd
+                    break
+                    
+            if d is not None:
+                needs_conveyor = True
+                if my_building is not None:
+                    b_type = c.get_entity_type(my_building)
+                    if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.CORE, EntityType.HARVESTER):
+                        needs_conveyor = False
+                
+                if needs_conveyor:
+                    ti, _ = c.get_global_resources()
+                    scale = c.get_scale_percent() / 100.0
+                    if ti < int(3 * scale):
+                        return ##wait till we can afford the final piece
+                        
+                    if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
+                        if c.can_destroy(my_pos):
+                            c.destroy(my_pos)
+                            
+                    if c.can_build_conveyor(my_pos, d):
+                        c.build_conveyor(my_pos, d)
+                    else:
+                        return 
+            
+            ##boom, we delivered the belt to the core! Reset memory instantly.
+            self.history = [my_pos]
+            self.state = "WANDER"
+            return
+
+        ##sTANDARD RETURN LOGIC
         if my_pos == target_pos:
             self.history.pop()
             return
@@ -349,11 +428,10 @@ class Player:
                 needs_conveyor = False
 
         if needs_conveyor:
-            ##check costs BEFORE destroying the road beneath us!
             ti, _ = c.get_global_resources()
             scale = c.get_scale_percent() / 100.0
             if ti < int(3 * scale):
-                return ##can't afford the conveyor yet, halt and wait.
+                return 
                 
             if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
                 if c.can_destroy(my_pos):
@@ -364,6 +442,8 @@ class Player:
             else:
                 return 
 
+        ##if a Wandering bot is in our way, just wait.
+        ##their new code forces them to yield to us!
         if c.can_move(d):
             c.move(d)
             self.history.pop()
