@@ -31,9 +31,8 @@ class Player:
         ti, ax = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
         
-        ##tHE ECONOMIC BOOM: Start with 6 workers immediately to explore fast!
-        ##then add 1 more bot for every 150 Ti we bank. Max out at 35 bots.
-        dynamic_bot_cap = min(35, 6 + int(ti / 150))
+        ##tHE FIX: Hard cap at 15 bots to prevent hyper-inflation and core gridlock!
+        dynamic_bot_cap = min(15, 5 + int(ti / 400))
         
         if self.spawned_bots < dynamic_bot_cap:
             builder_cost = int(10 * scale)
@@ -147,37 +146,44 @@ class Player:
             
     def build_bunker(self, c: Controller, target_pos: Position, facing_dir: Direction):
         """
-        Builds a Splitter facing the enemy, and tries to build 3 Gunners around it.
-        Assumes the conveyor belt is coming in from behind the Splitter.
+        Builds a Splitter facing the enemy, and tries to build 3 Turrets around it.
+        Upgrades to BREACH turrets if Refined Axionite is available!
         """
-        ti, _ = c.get_global_resources()
+        ti, ax = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
         
-        ##a Splitter (6) + 3 Gunners (10 each) = 36 base Ti.
-        ##let's require a safe buffer of 60 Ti to start construction.
-        if ti < int(60 * scale):
-            return False
+        ##check if we have Refined Axionite to afford Breach Turrets
+        ##breach costs 30 Ti + 10 Ax. For 3 turrets, we want a healthy buffer.
+        use_breach = ax >= int(15 * scale)
+        
+        if use_breach:
+            if ti < int(100 * scale): 
+                return False ##wait for Titanium to catch up
+        else:
+            if ti < int(60 * scale): 
+                return False
 
         ##build the Splitter
         if c.can_build_splitter(target_pos, facing_dir):
             c.build_splitter(target_pos, facing_dir)
 
-        ##calculate the three output directions
-        ##if facing NORTH, outputs are NORTH, EAST, WEST. Back is SOUTH.
         idx = CARDINALS.index(facing_dir)
         left_dir = CARDINALS[(idx - 1) % 4]
         right_dir = CARDINALS[(idx + 1) % 4]
-        
         output_dirs = [facing_dir, left_dir, right_dir]
         
-        ##slap turrets on the outputs!
+        ##slap the best available turrets on the outputs!
         built_any = False
         for d in output_dirs:
             turret_pos = target_pos.add(d)
-            ##make the turrets face the exact same way as the bunker
-            if c.can_build_gunner(turret_pos, facing_dir):
-                c.build_gunner(turret_pos, facing_dir)
-                built_any = True
+            if use_breach:
+                if c.can_build_breach(turret_pos, facing_dir):
+                    c.build_breach(turret_pos, facing_dir)
+                    built_any = True
+            else:
+                if c.can_build_gunner(turret_pos, facing_dir):
+                    c.build_gunner(turret_pos, facing_dir)
+                    built_any = True
                 
         return built_any
 
