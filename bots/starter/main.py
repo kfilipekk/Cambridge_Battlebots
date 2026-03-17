@@ -212,7 +212,6 @@ class Player:
                 if self.build_bunker(c, build_pos, attack_dir):
                     ##now that the bunker is placed, step backward and start laying
                     ##a standard conveyor belt to bring ammo to the Splitter!
-                    self.history = [self.history[0], my_pos] 
                     self.state = "RETURN" 
                 return
         
@@ -309,9 +308,8 @@ class Player:
         for check_d in CARDINALS:
             np = my_pos.add(check_d)
             if 0 <= np.x < c.get_map_width() and 0 <= np.y < c.get_map_height():
-                ##avoid mindless 1-tile backtracking
-                if len(self.history) < 2 or np != self.history[-2]:
-                    ##cRUCIAL FIX: can_move actually checks if another bot is blocking us!
+                ##tHE CAROUSEL CURE: Never revisit a tile in our current memory
+                if np not in self.history:
                     if c.can_move(check_d): 
                         free_dirs.append(check_d)
                     elif c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
@@ -323,13 +321,13 @@ class Player:
             self.history.append(my_pos)
             return True
         elif free_dirs:
-            ##our preferred direction is blocked, but there is another free road!
+            ##slide onto the existing road network
             self.heading = random.choice(free_dirs)
             c.move(self.heading)
             self.history.append(my_pos)
             return True
             
-        ##priority 2: We reached the end of the road. Pave into the unknown.
+        ##priority 2: Pave into the unknown frontier
         build_dir = None
         if d in empty_dirs:
             build_dir = d
@@ -344,10 +342,14 @@ class Player:
             
             if ti >= int(1 * scale) + (15 * scale) and c.can_build_road(np):
                 c.build_road(np)
-            return True
+                return True ##tHE FREEZE CURE: Only return True if we actually built it!
+            else:
+                ##we can't afford the road. Turn so we don't freeze in place.
+                self._turn()
+                return False
             
-        ##priority 3: We are completely boxed in by bots or walls!
-        ##step aside and wait for traffic to clear.
+        ##priority 3: Boxed in by walls, loops, or bots!
+        ##erase a step of history so we are allowed to walk backwards out of the trap.
         self._turn()
         if len(self.history) > 1:
             self.history.pop() 
@@ -374,8 +376,11 @@ class Player:
         target_pos = self.history[-1]
         
         ##eARLY CORE ARRIVAL FIX
-        ##if our next step is the Core, don't try to cram inside it!
-        target_building = c.get_tile_building_id(target_pos)
+        ##sAFETY GOGGLES: Only query the tile if we can actually see it!
+        target_building = None
+        if c.is_in_vision(target_pos):
+            target_building = c.get_tile_building_id(target_pos)
+            
         if target_building is not None and c.get_entity_type(target_building) == EntityType.CORE:
             d = None
             for cd in CARDINALS:
