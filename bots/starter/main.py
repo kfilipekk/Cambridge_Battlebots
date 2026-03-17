@@ -2,11 +2,14 @@
 
 import random
 import collections
+import sys
 from cambc import Controller, Direction, EntityType, Environment, Position
 
 CARDINALS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
 ALL_DIRS = [d for d in Direction if d != Direction.CENTRE]
 
+##cartography: We build a map from our combined vision
+_KNOWLEDGE_MAP = {}
 
 class Player:
     def __init__(self):
@@ -16,10 +19,73 @@ class Player:
         self.target_ore = None
         self.spawned_bots = 0
         self.role = "MINER"
+        self.turn_offset = random.choice([-1, 1])
         
+    def update_cartography(self, c: Controller):
+        global _KNOWLEDGE_MAP
+        my_team = c.get_team()
+        
+        ##update buildings in vision
+        for bid in c.get_nearby_buildings():
+            try:
+                b_pos = c.get_position(id=bid)
+                b_type = c.get_entity_type(id=bid)
+                b_team = c.get_team(id=bid) if hasattr(c, 'get_team') else my_team
+                
+                ##assign simple icons
+                icon = "?"
+                if b_type == EntityType.CORE: icon = "C" if b_team == my_team else "c"
+                elif b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR): icon = "v" if b_team == my_team else "x"
+                elif b_type == EntityType.ROAD: icon = "="
+                elif b_type == EntityType.BRIDGE: icon = "B"
+                elif b_type == EntityType.SPLITTER: icon = "S" if b_team == my_team else "s"
+                elif b_type in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH): icon = "T" if b_team == my_team else "t"
+                elif b_type == EntityType.FOUNDRY: icon = "F" if b_team == my_team else "f"
+                elif b_type == EntityType.HARVESTER: icon = "H" if b_team == my_team else "h"
+                elif b_type == EntityType.LAUNCHER: icon = "L" if b_team == my_team else "l"
+                
+                _KNOWLEDGE_MAP[(b_pos.x, b_pos.y)] = icon
+            except Exception:
+                pass
+
+
     def run(self, c: Controller) -> None:
+        self.update_cartography(c)
         etype = c.get_entity_type()
+
         if etype == EntityType.CORE:
+            ##print the final mapped map occasionally
+            if c.get_current_round() % 100 == 0 and c.get_current_round() > 50:
+                width = c.get_map_width()
+                height = c.get_map_height()
+                hdr = f"\n@@DYNAMIC_MAP_BEGIN[{c.get_current_round()}]@@\n"
+                for y in range(height):
+                    row = ""
+                    for x in range(width):
+                        pos = Position(x, y)
+                        val = _KNOWLEDGE_MAP.get((x, y))
+                        if val is None:
+                            try:
+                                if c.is_in_vision(pos):
+                                    env = c.get_tile_env(pos)
+                                    ore = c.get_tile_ore(pos)
+                                    if env == Environment.WALL: val = "#"
+                                    elif ore == 1: val = "M" 
+                                    elif ore == 2: val = "A" 
+                                    else: val = "."
+                                    _KNOWLEDGE_MAP[(x, y)] = val
+                                else:
+                                    val = " " ##fog of war
+                            except Exception:
+                                val = " "
+                        
+                        ##just in case val is still None
+                        if val is None: val = " "
+                        row += val
+                    hdr += row + "\n"
+                hdr += f"@@DYNAMIC_MAP_END@@]@@\n"
+                print(hdr, file=sys.stderr)
+
             self.run_core(c)
         elif etype == EntityType.BUILDER_BOT:
             self.run_builder(c)
@@ -96,21 +162,23 @@ class Player:
                     
         return False
 
+    def assign_role(self, c: Controller):
+        round_num = c.get_current_round()
+        roll = random.random()
+        
+        if round_num > 700 and roll < 0.25:
+            self.role = "SABOTEUR"
+        elif round_num > 250 and roll < 0.40:
+            self.role = "REFINER"
+        else:
+            self.role = "MINER"
+
     def run_builder(self, c: Controller):
         if self.state == "INIT":
             self.state = "WANDER"
             self.history.append(c.get_position())
             
-            ##tHE NEW ROSTER:
-            round_num = c.get_current_round()
-            roll = random.random()
-            
-            if round_num > 700 and roll < 0.25:
-                self.role = "SABOTEUR"
-            elif round_num > 250 and roll < 0.40: ##15% chance to be a Refiner after early game
-                self.role = "REFINER"
-            else:
-                self.role = "MINER"
+            self.assign_role(c)
             
             valid_dirs = []
             for d in CARDINALS:
@@ -164,6 +232,9 @@ class Player:
                 return False
 
         ##build the Splitter
+        if facing_dir not in CARDINALS:
+            facing_dir = random.choice(CARDINALS)
+            
         if c.can_build_splitter(target_pos, facing_dir):
             c.build_splitter(target_pos, facing_dir)
 
@@ -200,8 +271,9 @@ class Player:
         enemy_y = c.get_map_height() - 1 - start_pos.y
         enemy_core_guess = Position(enemy_x, enemy_y)
 
-        ##dROP TURRETS: If we are in the hot zone (within 15 tiles)
-        if my_pos.distance_squared(enemy_core_guess) < 225: 
+##dROP TURRETS: The Siege Engine
+        ##march deep into the base so our Breach turrets can actually hit the Core!
+        if my_pos.distance_squared(enemy_core_guess) <= 36: 
             ##get the direction pointing AT the enemy core
             attack_dir = my_pos.direction_to(enemy_core_guess)
             
@@ -279,6 +351,7 @@ class Player:
                     self.state = "RETURN" 
                     self.target_ore = None
                 else:
+                    self.target_ore = None
                     self._turn()
                     self.try_step(c, self.heading)
                 return
@@ -302,64 +375,55 @@ class Player:
     def try_step(self, c: Controller, d: Direction):
         my_pos = c.get_position()
         
-        free_dirs = []
-        empty_dirs = []
+        ti, _ = c.get_global_resources()
+        scale = c.get_scale_percent() / 100.0
+        can_afford_road = ti >= int(1 * scale) + (15 * scale)
+
+        if d is not None and d in CARDINALS:
+            self.heading = d
+            
+        ##5% chance to peel off the wall into open space
+        if self.state == "WANDER" and can_afford_road and random.random() < 0.05:
+            idx = CARDINALS.index(self.heading)
+            self.heading = CARDINALS[(idx + random.choice([-1, 1])) % 4]
+            
+        idx = CARDINALS.index(self.heading)
         
-        for check_d in CARDINALS:
+        ##bug-1 Algorithm: Forward, Turn, Anti-Turn, Backward (absolute last resort!)
+        check_order = [
+            self.heading,
+            CARDINALS[(idx + self.turn_offset) % 4],
+            CARDINALS[(idx - self.turn_offset) % 4],
+            CARDINALS[(idx + 2) % 4]
+        ]
+
+        for check_d in check_order:
             np = my_pos.add(check_d)
             if 0 <= np.x < c.get_map_width() and 0 <= np.y < c.get_map_height():
-                ##tHE CAROUSEL CURE: Never revisit a tile in our current memory
-                if np not in self.history:
-                    if c.can_move(check_d): 
-                        free_dirs.append(check_d)
-                    elif c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
-                        empty_dirs.append(check_d)
-
-        ##priority 1: Walk on existing free roads/conveyors
-        if d in free_dirs:
-            c.move(d)
-            self.history.append(my_pos)
-            return True
-        elif free_dirs:
-            ##slide onto the existing road network
-            self.heading = random.choice(free_dirs)
-            c.move(self.heading)
-            self.history.append(my_pos)
-            return True
-            
-        ##priority 2: Pave into the unknown frontier
-        build_dir = None
-        if d in empty_dirs:
-            build_dir = d
-        elif empty_dirs:
-            build_dir = random.choice(empty_dirs)
-            self.heading = build_dir
-            
-        if build_dir:
-            np = my_pos.add(build_dir)
-            ti, _ = c.get_global_resources()
-            scale = c.get_scale_percent() / 100.0
-            
-            if ti >= int(1 * scale) + (15 * scale) and c.can_build_road(np):
-                c.build_road(np)
-                return True ##tHE FREEZE CURE: Only return True if we actually built it!
-            else:
-                ##we can't afford the road. Turn so we don't freeze in place.
-                self._turn()
-                return False
-            
-        ##priority 3: Boxed in by walls, loops, or bots!
-        ##erase a step of history so we are allowed to walk backwards out of the trap.
+                ##walkable? (By omitting history[-2], we allow 1-tile dead end escapes!)
+                if c.can_move(check_d):
+                    c.move(check_d)
+                    self.heading = check_d
+                    if np in self.history:
+                        cut_idx = self.history.index(np)
+                        self.history = self.history[:cut_idx+1]
+                    else:
+                        self.history.append(my_pos)
+                    return True
+                    
+                ##touchable (empty dirt)?
+                elif c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
+                    if can_afford_road and c.can_build_road(np):
+                        c.build_road(np)
+                        self.heading = check_d
+                        return True
+                        
         self._turn()
-        if len(self.history) > 1:
-            self.history.pop() 
         return False
 
     def _turn(self):
-        ##instead of randomly bouncing, turn left or right 90 degrees cleanly
         idx = CARDINALS.index(self.heading)
-        offset = random.choice([-1, 1])
-        self.heading = CARDINALS[(idx + offset) % 4]
+        self.heading = CARDINALS[(idx + self.turn_offset) % 4]
 
     def do_return(self, c: Controller):
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
@@ -370,7 +434,21 @@ class Player:
         
         if len(self.history) == 0:
             self.state = "WANDER"
+            self.assign_role(c)
             self.history.append(my_pos)
+            
+            ##cORE DEFENSE: Passive Turret placement
+            ti, ax = c.get_global_resources()
+            scale = c.get_scale_percent() / 100.0
+            
+            if ti >= int(150 * scale): ##ensure we do not starve the economy early game
+                out_d = random.choice(CARDINALS)
+                build_pos = my_pos.add(out_d)
+                if c.is_tile_empty(build_pos) and c.get_tile_building_id(build_pos) is None:
+                    if ax >= int(15 * scale) and c.can_build_breach(build_pos, out_d):
+                        c.build_breach(build_pos, out_d)
+                    elif c.can_build_sentinel(build_pos, out_d):
+                        c.build_sentinel(build_pos, out_d)
             return
             
         target_pos = self.history[-1]
@@ -408,11 +486,16 @@ class Player:
                     if c.can_build_conveyor(my_pos, d):
                         c.build_conveyor(my_pos, d)
                     else:
-                        return 
+                        target_bridge = my_pos.add(d)
+                        if ti >= int(10 * scale) and hasattr(c, 'can_build_bridge') and c.can_build_bridge(my_pos, target_bridge):
+                            c.build_bridge(my_pos, target_bridge)
+                        else:
+                            return
             
             ##boom, we delivered the belt to the core! Reset memory instantly.
             self.history = [my_pos]
             self.state = "WANDER"
+            self.assign_role(c) # <--- ADD THIS LINE HERE
             return
 
         ##sTANDARD RETURN LOGIC
@@ -436,8 +519,7 @@ class Player:
             if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
                 needs_conveyor = False
             elif b_type in (EntityType.CORE, EntityType.HARVESTER):
-                needs_conveyor = False
-
+                needs_conveyor = False                
         if needs_conveyor:
             ti, _ = c.get_global_resources()
             scale = c.get_scale_percent() / 100.0
@@ -451,10 +533,21 @@ class Player:
             if c.can_build_conveyor(my_pos, d):
                 c.build_conveyor(my_pos, d)
             else:
-                return 
+                target_bridge = my_pos.add(d)
+                if ti >= int(10 * scale) and hasattr(c, 'can_build_bridge') and c.can_build_bridge(my_pos, target_bridge):
+                    c.build_bridge(my_pos, target_bridge)
+                else:
+                    return
 
         ##if a Wandering bot is in our way, just wait.
         ##their new code forces them to yield to us!
         if c.can_move(d):
             c.move(d)
             self.history.pop()
+        else:
+            np = my_pos.add(d)
+            if c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
+                ti, _ = c.get_global_resources()
+                scale = c.get_scale_percent() / 100.0
+                if ti >= int(16 * scale) and c.can_build_road(np):
+                    c.build_road(np)
