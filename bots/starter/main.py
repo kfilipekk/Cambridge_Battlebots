@@ -1,91 +1,234 @@
-"""Starter bot - a simple example to demonstrate usage of the Controller API."""
-
 import random
-import collections
-import sys
+import heapq
+
 from cambc import Controller, Direction, EntityType, Environment, Position
 
-CARDINALS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
-ALL_DIRS = [d for d in Direction if d != Direction.CENTRE]
+ALL_DIRS = [
+    Direction.NORTH, Direction.NORTHEAST, Direction.EAST, Direction.SOUTHEAST,
+    Direction.SOUTH, Direction.SOUTHWEST, Direction.WEST, Direction.NORTHWEST
+]
 
-##cartography: We build a map from our combined vision
-_KNOWLEDGE_MAP = {}
+def get_walk_path(start_pos, target_pos, c, player):
+    w, h = player.width, player.height
+    queue = [(max(abs(start_pos.x - target_pos.x), abs(start_pos.y - target_pos.y)), 0, start_pos.x, start_pos.y)]
+    costs = {(start_pos.x, start_pos.y): 0}
+    came_from = {}
+    
+    iters = 0
+    final_pos = None
+    
+    while queue and iters < 2000:
+        iters += 1
+        if iters % 50 == 0 and c.get_cpu_time_elapsed() > 1700:
+            break
+            
+        _, cost, cx, cy = heapq.heappop(queue)
+        curr = Position(cx, cy)
+        
+        if curr == target_pos:
+            final_pos = curr
+            break
+            
+        if cost > costs.get((cx, cy), float('inf')):
+            continue
+            
+        for d in ALL_DIRS:
+            nx, ny = cx + d.delta()[0], cy + d.delta()[1]
+            if not (0 <= nx < w and 0 <= ny < h):
+                continue
+                
+            n_env = player.env_map.get((nx, ny), Environment.EMPTY)
+            n_bldg = player.bldg_map.get((nx, ny))
+            n_team = player.team_map.get((nx, ny))
+            
+            if Position(nx, ny) == target_pos:
+                ncost = cost + 1
+                if ncost < costs.get((nx, ny), float('inf')):
+                    costs[(nx, ny)] = ncost
+                    heapq.heappush(queue, (ncost + max(abs(nx - target_pos.x), abs(ny - target_pos.y)), ncost, nx, ny))
+                    came_from[(nx, ny)] = curr
+                continue
+                
+            if n_env in (Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
+                continue
+                
+            if n_bldg is not None and n_team != c.get_team():
+                if n_bldg not in (EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
+                    continue
+                
+            if (nx, ny) not in player.env_map:
+                weight = 10
+            elif n_bldg in (EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.CORE):
+                weight = 1
+            else:
+                weight = 5
+                
+            ncost = cost + weight
+            if ncost < costs.get((nx, ny), float('inf')):
+                costs[(nx, ny)] = ncost
+                heapq.heappush(queue, (ncost + max(abs(nx - target_pos.x), abs(ny - target_pos.y)), ncost, nx, ny))
+                came_from[(nx, ny)] = curr
+                
+    if not final_pos: return None
+    path = []
+    curr = final_pos
+    while curr != start_pos:
+        path.append(curr)
+        curr = came_from[(curr.x, curr.y)]
+    path.append(start_pos)
+    path.reverse()
+    return path
+
+def get_conveyor_path(start_pos, target_pos, c, player):
+    w, h = player.width, player.height
+    queue = [(max(abs(start_pos.x - target_pos.x), abs(start_pos.y - target_pos.y)), 0, start_pos.x, start_pos.y)]
+    costs = {(start_pos.x, start_pos.y): 0}
+    came_from = {}
+    
+    iters = 0
+    final_pos = None
+    
+    while queue and iters < 2000:
+        iters += 1
+        if iters % 50 == 0 and c.get_cpu_time_elapsed() > 1700:
+            break
+            
+        _, cost, cx, cy = heapq.heappop(queue)
+        curr = Position(cx, cy)
+        
+        if curr == target_pos:
+            final_pos = curr
+            break
+            
+        if cost > costs.get((cx, cy), float('inf')):
+            continue
+            
+        bldg = player.bldg_map.get((cx, cy))
+        team = player.team_map.get((cx, cy))
+        
+        if bldg in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR) and team == c.get_team():
+            d = player.dir_map.get((cx, cy))
+            if d:
+                nx, ny = cx + d.delta()[0], cy + d.delta()[1]
+                if 0 <= nx < w and 0 <= ny < h:
+                    ncost = cost + 1
+                    if ncost < costs.get((nx, ny), float('inf')):
+                        costs[(nx, ny)] = ncost
+                        heapq.heappush(queue, (ncost + max(abs(nx - target_pos.x), abs(ny - target_pos.y)), ncost, nx, ny))
+                        came_from[(nx, ny)] = curr
+            continue
+            
+        for d in ALL_DIRS:
+            nx, ny = cx + d.delta()[0], cy + d.delta()[1]
+            if not (0 <= nx < w and 0 <= ny < h):
+                continue
+                
+            n_env = player.env_map.get((nx, ny), Environment.EMPTY)
+            n_bldg = player.bldg_map.get((nx, ny))
+            n_team = player.team_map.get((nx, ny))
+            
+            if Position(nx, ny) == target_pos:
+                ncost = cost + 1
+                if ncost < costs.get((nx, ny), float('inf')):
+                    costs[(nx, ny)] = ncost
+                    heapq.heappush(queue, (ncost + max(abs(nx - target_pos.x), abs(ny - target_pos.y)), ncost, nx, ny))
+                    came_from[(nx, ny)] = curr
+                continue
+                
+            if n_env in (Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
+                continue
+                
+            if n_bldg is not None:
+                if n_team != c.get_team():
+                    continue
+                else:
+                    if n_bldg not in (EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.CORE, EntityType.FOUNDRY):
+                        continue
+                    
+            if (nx, ny) not in player.env_map:
+                weight = 40
+            elif n_bldg == EntityType.ROAD: weight = 5
+            elif n_bldg in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR): weight = 1
+            else: weight = 15
+            
+            ncost = cost + weight
+            if ncost < costs.get((nx, ny), float('inf')):
+                costs[(nx, ny)] = ncost
+                heapq.heappush(queue, (ncost + max(abs(nx - target_pos.x), abs(ny - target_pos.y)), ncost, nx, ny))
+                came_from[(nx, ny)] = curr
+                
+    if not final_pos: return None
+    path = []
+    curr = final_pos
+    while curr != start_pos:
+        path.append(curr)
+        curr = came_from[(curr.x, curr.y)]
+    path.append(start_pos)
+    path.reverse()
+    return path
 
 class Player:
     def __init__(self):
         self.state = "INIT"
-        self.history = []
-        self.heading = None
-        self.target_ore = None
+        self.role = "NORMAL"
+        self.width = None
+        self.height = None
+        
+        self.env_map = {}
+        self.bldg_map = {}
+        self.team_map = {}
+        self.dir_map = {}
+        
+        self.core_pos = None
+        self.foundry_pos = None
         self.spawned_bots = 0
-        self.role = "MINER"
-        self.turn_offset = random.choice([-1, 1])
         
-    def update_cartography(self, c: Controller):
-        global _KNOWLEDGE_MAP
-        my_team = c.get_team()
-        
-        ##update buildings in vision
-        for bid in c.get_nearby_buildings():
-            try:
-                b_pos = c.get_position(id=bid)
-                b_type = c.get_entity_type(id=bid)
-                b_team = c.get_team(id=bid) if hasattr(c, 'get_team') else my_team
-                
-                ##assign simple icons
-                icon = "?"
-                if b_type == EntityType.CORE: icon = "C" if b_team == my_team else "c"
-                elif b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR): icon = "v" if b_team == my_team else "x"
-                elif b_type == EntityType.ROAD: icon = "="
-                elif b_type == EntityType.BRIDGE: icon = "B"
-                elif b_type == EntityType.SPLITTER: icon = "S" if b_team == my_team else "s"
-                elif b_type in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH): icon = "T" if b_team == my_team else "t"
-                elif b_type == EntityType.FOUNDRY: icon = "F" if b_team == my_team else "f"
-                elif b_type == EntityType.HARVESTER: icon = "H" if b_team == my_team else "h"
-                elif b_type == EntityType.LAUNCHER: icon = "L" if b_team == my_team else "l"
-                
-                _KNOWLEDGE_MAP[(b_pos.x, b_pos.y)] = icon
-            except Exception:
-                pass
+        self.walk_path = []
+        self.path = []
+        self.path_idx = 0
+        self.target = None
+        self.target_env = None
+        self.stuck_counter = 0
 
+    def update_cartography(self, c: Controller):
+        for tile in c.get_nearby_tiles(c.get_vision_radius_sq()):
+            tx, ty = tile.x, tile.y
+            self.env_map[(tx, ty)] = c.get_tile_env(tile)
+            
+            bid = c.get_tile_building_id(tile)
+            if bid is not None:
+                self.bldg_map[(tx, ty)] = c.get_entity_type(bid)
+                self.team_map[(tx, ty)] = c.get_team(bid)
+                if self.bldg_map[(tx, ty)] in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
+                    self.dir_map[(tx, ty)] = c.get_direction(bid)
+                else:
+                    self.dir_map[(tx, ty)] = None
+            else:
+                self.bldg_map[(tx, ty)] = None
+                self.team_map[(tx, ty)] = None
+                self.dir_map[(tx, ty)] = None
+                
+        for bid in c.get_nearby_buildings():
+            b_type = c.get_entity_type(bid)
+            b_team = c.get_team(bid)
+            if b_type == EntityType.CORE:
+                b_pos = c.get_position(bid)
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        nx, ny = b_pos.x + dx, b_pos.y + dy
+                        if 0 <= nx < self.width and 0 <= ny < self.height:
+                            self.bldg_map[(nx, ny)] = EntityType.CORE
+                            self.team_map[(nx, ny)] = b_team
 
     def run(self, c: Controller) -> None:
+        if self.width is None:
+            self.width = c.get_map_width()
+            self.height = c.get_map_height()
+
         self.update_cartography(c)
         etype = c.get_entity_type()
 
         if etype == EntityType.CORE:
-            ##print the final mapped map occasionally
-            if c.get_current_round() % 100 == 0 and c.get_current_round() > 50:
-                width = c.get_map_width()
-                height = c.get_map_height()
-                hdr = f"\n@@DYNAMIC_MAP_BEGIN[{c.get_current_round()}]@@\n"
-                for y in range(height):
-                    row = ""
-                    for x in range(width):
-                        pos = Position(x, y)
-                        val = _KNOWLEDGE_MAP.get((x, y))
-                        if val is None:
-                            try:
-                                if c.is_in_vision(pos):
-                                    env = c.get_tile_env(pos)
-                                    ore = c.get_tile_ore(pos)
-                                    if env == Environment.WALL: val = "#"
-                                    elif ore == 1: val = "M" 
-                                    elif ore == 2: val = "A" 
-                                    else: val = "."
-                                    _KNOWLEDGE_MAP[(x, y)] = val
-                                else:
-                                    val = " " ##fog of war
-                            except Exception:
-                                val = " "
-                        
-                        ##just in case val is still None
-                        if val is None: val = " "
-                        row += val
-                    hdr += row + "\n"
-                hdr += f"@@DYNAMIC_MAP_END@@]@@\n"
-                print(hdr, file=sys.stderr)
-
             self.run_core(c)
         elif etype == EntityType.BUILDER_BOT:
             self.run_builder(c)
@@ -94,460 +237,416 @@ class Player:
         if c.get_action_cooldown() != 0:
             return
             
-        ti, ax = c.get_global_resources()
-        scale = c.get_scale_percent() / 100.0
+        ti, _ = c.get_global_resources()
         
-        ##tHE FIX: Hard cap at 15 bots to prevent hyper-inflation and core gridlock!
-        dynamic_bot_cap = min(15, 5 + int(ti / 400))
+        ##swarm limits gently increment into late game to limit Scale inflation
+        bot_cap = min(18, 5 + c.get_current_round() // 120)
         
-        if self.spawned_bots < dynamic_bot_cap:
-            builder_cost = int(10 * scale)
-            harvester_cost = int(80 * scale)
+        if self.spawned_bots < bot_cap:
+            cost_ti, _ = c.get_builder_bot_cost()
+            required_ti = cost_ti + 80 + (self.spawned_bots * 30)
             
-            ##keep a smaller buffer early on so we don't stall early expansion
-            buffer = 30 * scale if ti < 500 else 100 * scale 
-            
-            if ti > builder_cost + harvester_cost + buffer:
-                spawn_dirs = list(CARDINALS)
+            if ti >= required_ti:
+                spawn_dirs = list(ALL_DIRS)
                 random.shuffle(spawn_dirs)
                 for d in spawn_dirs:
                     target = c.get_position().add(d)
                     if c.can_spawn(target):
                         c.spawn_builder(target)
                         self.spawned_bots += 1
+                        
+                        ##bot ##8 receives the Foundry marker command
+                        if c.can_place_marker(target):
+                            c.place_marker(target, 999 if self.spawned_bots == 8 else 1)
                         break
-
-    def check_and_build_foundry(self, c: Controller):
-        ti, ax = c.get_global_resources()
-        scale = c.get_scale_percent() / 100.0
-        
-        ##wait for a massive titanium reserve before building
-        ##if we double our costs, we need cash to survive the transition.
-        if ti < (120 * scale) + 1000: 
-            return False
-            
-        ##we need Raw Axionite flowing into the core first
-        if ax < 10:
-            return False
-
-        core_pos = self.history[0] if self.history else c.get_position()
-        
-        ##ensure we only ever build one foundry
-        foundry_claimed = False
-        for eid in c.get_nearby_entities():
-            if c.get_entity_type(eid) == getattr(EntityType, 'MARKER', None):
-                if c.get_marker_value(eid) == 999:
-                    foundry_claimed = True
-                    break
-                    
-        for tile in c.get_nearby_tiles(25):
-            bid = c.get_tile_building_id(tile)
-            if bid and c.get_entity_type(bid) == getattr(EntityType, 'AXIONITE_FOUNDRY', None):
-                foundry_claimed = True
-                break
-
-        if foundry_claimed:
-            return False 
-            
-        ##claim and build the foundry
-        if c.can_place_marker(core_pos):
-            c.place_marker(core_pos, 999)
-            
-        for d in CARDINALS:
-            build_pos = core_pos.add(d)
-            if c.is_tile_empty(build_pos):
-                if hasattr(c, 'can_build_axionite_foundry') and c.can_build_axionite_foundry(build_pos):
-                    c.build_axionite_foundry(build_pos)
-                    return True
-                    
-        return False
-
-    def assign_role(self, c: Controller):
-        round_num = c.get_current_round()
-        roll = random.random()
-        
-        if round_num > 700 and roll < 0.25:
-            self.role = "SABOTEUR"
-        elif round_num > 250 and roll < 0.40:
-            self.role = "REFINER"
-        else:
-            self.role = "MINER"
 
     def run_builder(self, c: Controller):
         if self.state == "INIT":
-            self.state = "WANDER"
-            self.history.append(c.get_position())
-            
-            self.assign_role(c)
-            
-            valid_dirs = []
-            for d in CARDINALS:
-                np = c.get_position().add(d)
-                if c.is_tile_passable(np) and c.get_tile_building_id(np) is None:
-                    valid_dirs.append(d)
-            self.heading = random.choice(valid_dirs) if valid_dirs else random.choice(CARDINALS)
-
-        if self.role == "SABOTEUR":
-            self.do_sabotage(c)
-            return
-
-        if self.state == "WANDER":
-            ##anyone wandering near the base can help build the foundry
-            if len(self.history) <= 3:
-                if self.check_and_build_foundry(c):
-                    return ##action spent!
-
-            ##if we just arrived back at the core, apply the Scatter Protocol again
-            if len(self.history) <= 1:
-                valid_dirs = []
-                for d in CARDINALS:
-                    np = c.get_position().add(d)
-                    if c.is_tile_passable(np) and c.get_tile_building_id(np) is None:
-                        valid_dirs.append(d)
-                if valid_dirs and self.heading not in valid_dirs:
-                     self.heading = random.choice(valid_dirs)
-
-            self.do_wander(c)
-            
-        elif self.state == "RETURN":
-            self.do_return(c)
-            
-    def build_bunker(self, c: Controller, target_pos: Position, facing_dir: Direction):
-        """
-        Builds a Splitter facing the enemy, and tries to build 3 Turrets around it.
-        Upgrades to BREACH turrets if Refined Axionite is available!
-        """
-        ti, ax = c.get_global_resources()
-        scale = c.get_scale_percent() / 100.0
-        
-        ##check if we have Refined Axionite to afford Breach Turrets
-        ##breach costs 30 Ti + 10 Ax. For 3 turrets, we want a healthy buffer.
-        use_breach = ax >= int(15 * scale)
-        
-        if use_breach:
-            if ti < int(100 * scale): 
-                return False ##wait for Titanium to catch up
-        else:
-            if ti < int(60 * scale): 
-                return False
-
-        ##build the Splitter
-        if facing_dir not in CARDINALS:
-            facing_dir = random.choice(CARDINALS)
-            
-        if c.can_build_splitter(target_pos, facing_dir):
-            c.build_splitter(target_pos, facing_dir)
-
-        idx = CARDINALS.index(facing_dir)
-        left_dir = CARDINALS[(idx - 1) % 4]
-        right_dir = CARDINALS[(idx + 1) % 4]
-        output_dirs = [facing_dir, left_dir, right_dir]
-        
-        ##slap the best available turrets on the outputs!
-        built_any = False
-        for d in output_dirs:
-            turret_pos = target_pos.add(d)
-            if use_breach:
-                if c.can_build_breach(turret_pos, facing_dir):
-                    c.build_breach(turret_pos, facing_dir)
-                    built_any = True
-            else:
-                if c.can_build_gunner(turret_pos, facing_dir):
-                    c.build_gunner(turret_pos, facing_dir)
-                    built_any = True
-                
-        return built_any
-
-    def do_sabotage(self, c: Controller):
-        if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
-            return
-            
-        my_pos = c.get_position()
-        
-        ##tHE SYMMETRY TRICK: Calculate enemy core location mathematically
-        ##use our spawn location (first item in history) to find our side's core
-        start_pos = self.history[0] if self.history else my_pos
-        enemy_x = c.get_map_width() - 1 - start_pos.x
-        enemy_y = c.get_map_height() - 1 - start_pos.y
-        enemy_core_guess = Position(enemy_x, enemy_y)
-
-##dROP TURRETS: The Siege Engine
-        ##march deep into the base so our Breach turrets can actually hit the Core!
-        if my_pos.distance_squared(enemy_core_guess) <= 36: 
-            ##get the direction pointing AT the enemy core
-            attack_dir = my_pos.direction_to(enemy_core_guess)
-            
-            if attack_dir:
-                ##step forward once so we have room to build behind us
-                build_pos = my_pos.add(attack_dir) 
-                
-                if self.build_bunker(c, build_pos, attack_dir):
-                    ##now that the bunker is placed, step backward and start laying
-                    ##a standard conveyor belt to bring ammo to the Splitter!
-                    self.state = "RETURN" 
-                return
-        
-        ##rELENTLESS MARCH
-        ##use the built-in compass to get the exact direction to the enemy
-        best_d = my_pos.direction_to(enemy_core_guess)
-        
-        ##try to step directly toward the enemy
-        if best_d and not self.try_step(c, best_d):
-            ##if our direct path is blocked (by a wall, ore, or another bot),
-            ##sidestep using our wander heading to easily pathfind around it.
-            self.try_step(c, self.heading)
-
-    def do_wander(self, c: Controller):
-        if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
-            return
-
-        my_pos = c.get_position()
-        
-        ##look for unmined ore
-        if not self.target_ore:
-            best_ore = None
-            closest_dist = 99999
-            for tile in c.get_nearby_tiles(20):
-                env = c.get_tile_env(tile)
-                if env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
-                    if c.get_tile_building_id(tile) is None:
-                        ##miners prioritize Titanium. Refiners prioritize Axionite!
-                        if self.role == "REFINER":
-                            dist_penalty = -99999 if env == Environment.ORE_AXIONITE else 99999
-                        else:
-                            dist_penalty = -99999 if env == Environment.ORE_TITANIUM else 0
-                            
-                        has_core = False
-                        for cx in range(-1, 2):
-                            for cy in range(-1, 2):
-                                c_pos = Position(tile.x + cx, tile.y + cy)
-                                if c.is_in_vision(c_pos) and (0 <= c_pos.x < c.get_map_width()) and (0 <= c_pos.y < c.get_map_height()):
-                                    bid = c.get_tile_building_id(c_pos)
-                                    if bid and c.get_entity_type(bid) == EntityType.CORE:
-                                        has_core = True
-                        if not has_core:
-                            dist = my_pos.distance_squared(tile) + dist_penalty
-                            if dist < closest_dist:
-                                closest_dist = dist
-                                best_ore = tile
-            if best_ore:
-                self.target_ore = best_ore
-
-        ##drop target if someone built on it (BUT ONLY check if we can actually see it!)
-        if self.target_ore and c.is_in_vision(self.target_ore):
-            if c.get_tile_building_id(self.target_ore) is not None:
-                self.target_ore = None
-
-        if self.target_ore:
-            dist = my_pos.distance_squared(self.target_ore)
-            ##must be exactly cardinal distance 1 to ensure conveyor connects
-            if dist == 1:
-                ti, _ = c.get_global_resources()
-                scale = c.get_scale_percent() / 100.0
-                project_cost = int(80 * scale) + (len(self.history) * int(3 * scale))
-                
-                if ti >= project_cost and c.can_build_harvester(self.target_ore):
-                    c.build_harvester(self.target_ore)
-                    self.state = "RETURN" 
-                    self.target_ore = None
-                else:
-                    self.target_ore = None
-                    self._turn()
-                    self.try_step(c, self.heading)
-                return
-            else:
-                best_d = None
-                best_d_dist = 99999
-                for d in CARDINALS:
-                    np = my_pos.add(d)
-                    d_dist = np.distance_squared(self.target_ore)
-                    if d_dist < best_d_dist:
-                        best_d = d
-                        best_d_dist = d_dist
-                if best_d:
-                    moved = self.try_step(c, best_d)
-                    if not moved:
-                        self.target_ore = None
-                return
-                
-        self.try_step(c, self.heading)
-
-    def try_step(self, c: Controller, d: Direction):
-        my_pos = c.get_position()
-        
-        ti, _ = c.get_global_resources()
-        scale = c.get_scale_percent() / 100.0
-        can_afford_road = ti >= int(1 * scale) + (15 * scale)
-
-        if d is not None and d in CARDINALS:
-            self.heading = d
-            
-        ##5% chance to peel off the wall into open space
-        if self.state == "WANDER" and can_afford_road and random.random() < 0.05:
-            idx = CARDINALS.index(self.heading)
-            self.heading = CARDINALS[(idx + random.choice([-1, 1])) % 4]
-            
-        idx = CARDINALS.index(self.heading)
-        
-        ##bug-1 Algorithm: Forward, Turn, Anti-Turn, Backward (absolute last resort!)
-        check_order = [
-            self.heading,
-            CARDINALS[(idx + self.turn_offset) % 4],
-            CARDINALS[(idx - self.turn_offset) % 4],
-            CARDINALS[(idx + 2) % 4]
-        ]
-
-        for check_d in check_order:
-            np = my_pos.add(check_d)
-            if 0 <= np.x < c.get_map_width() and 0 <= np.y < c.get_map_height():
-                ##walkable? (By omitting history[-2], we allow 1-tile dead end escapes!)
-                if c.can_move(check_d):
-                    c.move(check_d)
-                    self.heading = check_d
-                    if np in self.history:
-                        cut_idx = self.history.index(np)
-                        self.history = self.history[:cut_idx+1]
-                    else:
-                        self.history.append(my_pos)
-                    return True
-                    
-                ##touchable (empty dirt)?
-                elif c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
-                    if can_afford_road and c.can_build_road(np):
-                        c.build_road(np)
-                        self.heading = check_d
-                        return True
-                        
-        self._turn()
-        return False
-
-    def _turn(self):
-        idx = CARDINALS.index(self.heading)
-        self.heading = CARDINALS[(idx + self.turn_offset) % 4]
-
-    def do_return(self, c: Controller):
-        if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
-            return
-            
-        my_pos = c.get_position()
-        my_building = c.get_tile_building_id(my_pos)
-        
-        if len(self.history) == 0:
-            self.state = "WANDER"
-            self.assign_role(c)
-            self.history.append(my_pos)
-            
-            ##cORE DEFENSE: Passive Turret placement
-            ti, ax = c.get_global_resources()
-            scale = c.get_scale_percent() / 100.0
-            
-            if ti >= int(150 * scale): ##ensure we do not starve the economy early game
-                out_d = random.choice(CARDINALS)
-                build_pos = my_pos.add(out_d)
-                if c.is_tile_empty(build_pos) and c.get_tile_building_id(build_pos) is None:
-                    if ax >= int(15 * scale) and c.can_build_breach(build_pos, out_d):
-                        c.build_breach(build_pos, out_d)
-                    elif c.can_build_sentinel(build_pos, out_d):
-                        c.build_sentinel(build_pos, out_d)
-            return
-            
-        target_pos = self.history[-1]
-        
-        ##eARLY CORE ARRIVAL FIX
-        ##sAFETY GOGGLES: Only query the tile if we can actually see it!
-        target_building = None
-        if c.is_in_vision(target_pos):
-            target_building = c.get_tile_building_id(target_pos)
-            
-        if target_building is not None and c.get_entity_type(target_building) == EntityType.CORE:
-            d = None
-            for cd in CARDINALS:
-                if my_pos.add(cd) == target_pos:
-                    d = cd
+            self.core_pos = c.get_position()
+            for bid in c.get_nearby_buildings():
+                if c.get_entity_type(bid) == EntityType.CORE and c.get_team(bid) == c.get_team():
+                    self.core_pos = c.get_position(bid)
                     break
                     
-            if d is not None:
-                needs_conveyor = True
-                if my_building is not None:
-                    b_type = c.get_entity_type(my_building)
-                    if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.CORE, EntityType.HARVESTER):
-                        needs_conveyor = False
-                
-                if needs_conveyor:
-                    ti, _ = c.get_global_resources()
-                    scale = c.get_scale_percent() / 100.0
-                    if ti < int(3 * scale):
-                        return ##wait till we can afford the final piece
-                        
-                    if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
-                        if c.can_destroy(my_pos):
-                            c.destroy(my_pos)
-                            
-                    if c.can_build_conveyor(my_pos, d):
-                        c.build_conveyor(my_pos, d)
-                    else:
-                        target_bridge = my_pos.add(d)
-                        if ti >= int(10 * scale) and hasattr(c, 'can_build_bridge') and c.can_build_bridge(my_pos, target_bridge):
-                            c.build_bridge(my_pos, target_bridge)
-                        else:
-                            return
+            my_pos = c.get_position()
+            my_bid = c.get_tile_building_id(my_pos)
+            self.role = "NORMAL"
             
-            ##boom, we delivered the belt to the core! Reset memory instantly.
-            self.history = [my_pos]
-            self.state = "WANDER"
-            self.assign_role(c) # <--- ADD THIS LINE HERE
-            return
-
-        ##sTANDARD RETURN LOGIC
-        if my_pos == target_pos:
-            self.history.pop()
-            return
-
-        d = None
-        for cd in CARDINALS:
-            if my_pos.add(cd) == target_pos:
-                d = cd
-                break
-                
-        if d is None:
-            self.history.pop()
-            return
-
-        needs_conveyor = True
-        if my_building is not None:
-            b_type = c.get_entity_type(my_building)
-            if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
-                needs_conveyor = False
-            elif b_type in (EntityType.CORE, EntityType.HARVESTER):
-                needs_conveyor = False                
-        if needs_conveyor:
-            ti, _ = c.get_global_resources()
-            scale = c.get_scale_percent() / 100.0
-            if ti < int(3 * scale):
-                return 
-                
-            if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
-                if c.can_destroy(my_pos):
-                    c.destroy(my_pos)
-                    
-            if c.can_build_conveyor(my_pos, d):
-                c.build_conveyor(my_pos, d)
-            else:
-                target_bridge = my_pos.add(d)
-                if ti >= int(10 * scale) and hasattr(c, 'can_build_bridge') and c.can_build_bridge(my_pos, target_bridge):
-                    c.build_bridge(my_pos, target_bridge)
+            ##read spawn directive
+            if my_bid and c.get_entity_type(my_bid) == EntityType.MARKER:
+                if c.get_marker_value(my_bid) == 999:
+                    self.role = "FOUNDRY"
+                    self.state = "BUILD_FOUNDRY"
                 else:
-                    return
+                    self.state = "WANDER"
+            else:
+                self.state = "WANDER"
+                
+            self.stuck_counter = 0
 
-        ##if a Wandering bot is in our way, just wait.
-        ##their new code forces them to yield to us!
-        if c.can_move(d):
-            c.move(d)
-            self.history.pop()
+        if self.role == "FOUNDRY":
+            self.run_foundry_bot(c)
         else:
-            np = my_pos.add(d)
-            if c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
+            if self.state == "WANDER":
+                self.do_wander(c)
+            elif self.state == "RETURN":
+                self.do_return(c)
+
+    def run_foundry_bot(self, c: Controller):
+        if self.state == "BUILD_FOUNDRY":
+            if not self.foundry_pos:
+                cx, cy = self.core_pos.x, self.core_pos.y
+                best_fp = None
+                
+                ##scan precisely distances capable of feeding the core automatically (Chebyshev Distance = 2 Edge Tile)
+                for dx in [-2, -1, 0, 1, 2]:
+                    for dy in [-2, -1, 0, 1, 2]:
+                        if abs(dx) == 2 or abs(dy) == 2:
+                            pos = Position(cx + dx, cy + dy)
+                            if 0 <= pos.x < self.width and 0 <= pos.y < self.height:
+                                if self.env_map.get((pos.x, pos.y), Environment.EMPTY) == Environment.EMPTY:
+                                    if self.bldg_map.get((pos.x, pos.y)) is None:
+                                        best_fp = pos
+                                        break
+                    if best_fp: break
+                
+                if best_fp:
+                    self.foundry_pos = best_fp
+                else:
+                    self.role = "NORMAL"
+                    self.state = "WANDER"
+                    return
+                    
+            my_pos = c.get_position()
+            if my_pos.distance_squared(self.foundry_pos) <= 2:
+                if c.get_action_cooldown() == 0:
+                    ti, ax = c.get_global_resources()
+                    f_cost, _ = c.get_foundry_cost()
+                    if ti >= f_cost:
+                        if c.can_build_foundry(self.foundry_pos):
+                            c.build_foundry(self.foundry_pos)
+                            self.bldg_map[(self.foundry_pos.x, self.foundry_pos.y)] = EntityType.FOUNDRY
+                            self.state = "FIND_TI"
+                            self.target_env = Environment.ORE_TITANIUM
+                            self.walk_path = []
+            else:
+                self.target = self.foundry_pos
+                self._step_walk_path(c)
+
+        elif self.state == "FIND_TI":
+            self._find_ore_and_build(c, Environment.ORE_TITANIUM, "ROUTE_TI")
+
+        elif self.state == "ROUTE_TI":
+            if self._route_to_target(c, self.foundry_pos):
+                self.state = "FIND_AX"
+                self.target_env = Environment.ORE_AXIONITE
+                self.walk_path = []
+
+        elif self.state == "FIND_AX":
+            self._find_ore_and_build(c, Environment.ORE_AXIONITE, "ROUTE_AX")
+
+        elif self.state == "ROUTE_AX":
+            if self._route_to_target(c, self.foundry_pos):
+                self.state = "DONE"
+                
+        elif self.state == "DONE":
+            self.role = "NORMAL"
+            self.state = "WANDER"
+
+    def do_wander(self, c: Controller):
+        my_pos = c.get_position()
+        
+        if c.get_action_cooldown() == 0:
+            for d in ALL_DIRS:
+                adj = my_pos.add(d)
+                if c.is_in_vision(adj):
+                    env = self.env_map.get((adj.x, adj.y))
+                    if env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
+                        bldg = self.bldg_map.get((adj.x, adj.y))
+                        if bldg is None or bldg == EntityType.MARKER:
+                            ti, _ = c.get_global_resources()
+                            h_cost, _ = c.get_harvester_cost()
+                            if ti >= h_cost:
+                                if bldg == EntityType.MARKER and c.can_destroy(adj):
+                                    c.destroy(adj)
+                                if c.can_build_harvester(adj):
+                                    c.build_harvester(adj)
+                                    self.bldg_map[(adj.x, adj.y)] = EntityType.HARVESTER
+                                    self.team_map[(adj.x, adj.y)] = c.get_team()
+                                    self.state = "RETURN"
+                                    self.path = get_conveyor_path(my_pos, self.core_pos, c, self)
+                                    self.path_idx = 0
+                                    self.stuck_counter = 0
+                                    return
+                                    
+        if not self.walk_path or self.path_idx >= len(self.walk_path) - 1:
+            self.target = self.find_new_ore_target(c, self)
+            self.walk_path = get_walk_path(my_pos, self.target, c, self)
+            self.path_idx = 0
+            if not self.walk_path: return
+                
+        self._step_walk_path(c)
+
+    def do_return(self, c: Controller):
+        if self._route_to_target(c, self.core_pos):
+            self.state = "WANDER"
+            self.target = None
+            self.path = []
+
+    def _find_ore_and_build(self, c, ore_type, next_state):
+        my_pos = c.get_position()
+        
+        if c.get_action_cooldown() == 0:
+            for d in ALL_DIRS:
+                adj = my_pos.add(d)
+                if c.is_in_vision(adj):
+                    env = self.env_map.get((adj.x, adj.y))
+                    if env == ore_type:
+                        bldg = self.bldg_map.get((adj.x, adj.y))
+                        if bldg is None or bldg == EntityType.MARKER:
+                            ti, _ = c.get_global_resources()
+                            h_cost, _ = c.get_harvester_cost()
+                            if ti >= h_cost:
+                                if bldg == EntityType.MARKER and c.can_destroy(adj):
+                                    c.destroy(adj)
+                                if c.can_build_harvester(adj):
+                                    c.build_harvester(adj)
+                                    self.bldg_map[(adj.x, adj.y)] = EntityType.HARVESTER
+                                    self.team_map[(adj.x, adj.y)] = c.get_team()
+                                    self.state = next_state
+                                    self.path = get_conveyor_path(my_pos, self.foundry_pos, c, self)
+                                    self.path_idx = 0
+                                    self.stuck_counter = 0
+                                    return
+                                    
+        if not self.walk_path or self.path_idx >= len(self.walk_path) - 1 or getattr(self, 'target_env', None) != ore_type:
+            best_dist = float('inf')
+            best_ore = None
+            for (x, y), env in self.env_map.items():
+                if env == ore_type:
+                    pos = Position(x, y)
+                    if self.bldg_map.get((x, y)) == EntityType.HARVESTER:
+                        continue
+                    dist = my_pos.distance_squared(pos)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_ore = pos
+                        
+            if best_ore:
+                self.target = best_ore
+                self.target_env = ore_type
+                self.walk_path = get_walk_path(my_pos, self.target, c, self)
+                self.path_idx = 0
+            else:
+                self.target = self._get_explore_target(c)
+                self.walk_path = get_walk_path(my_pos, self.target, c, self)
+                self.path_idx = 0
+                
+        self._step_walk_path(c)
+
+    def _route_to_target(self, c, target_pos):
+        my_pos = c.get_position()
+        
+        if not self.path or self.path_idx >= len(self.path) - 1:
+            return True
+            
+        curr_pos = self.path[self.path_idx]
+        if my_pos != curr_pos:
+            self.path = get_conveyor_path(my_pos, target_pos, c, self)
+            self.path_idx = 0
+            if not self.path:
+                return True
+            return False
+            
+        next_pos = self.path[self.path_idx + 1]
+        expected_dir = my_pos.direction_to(next_pos)
+        
+        my_bid = c.get_tile_building_id(my_pos)
+        my_bldg = c.get_entity_type(my_bid) if my_bid else None
+        
+        if my_bldg not in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
+            if c.get_action_cooldown() == 0:
                 ti, _ = c.get_global_resources()
-                scale = c.get_scale_percent() / 100.0
-                if ti >= int(16 * scale) and c.can_build_road(np):
-                    c.build_road(np)
+                cost, _ = c.get_conveyor_cost()
+                if ti >= cost:
+                    if my_bldg == EntityType.ROAD and c.can_destroy(my_pos):
+                        c.destroy(my_pos)
+                    if c.can_build_conveyor(my_pos, expected_dir):
+                        c.build_conveyor(my_pos, expected_dir)
+                        self.bldg_map[(my_pos.x, my_pos.y)] = EntityType.CONVEYOR
+                        self.team_map[(my_pos.x, my_pos.y)] = c.get_team()
+                        self.dir_map[(my_pos.x, my_pos.y)] = expected_dir
+                    else:
+                        self.stuck_counter += 1
+                        if self.stuck_counter > 10:
+                            self._dodge_and_repath_conveyor(c, target_pos)
+            return False
+            
+        elif c.get_direction(my_bid) != expected_dir:
+            if c.get_team(my_bid) == c.get_team():
+                self.path = get_conveyor_path(my_pos, target_pos, c, self)
+                self.path_idx = 0
+            return False
+            
+        next_bid = c.get_tile_building_id(next_pos)
+        next_bldg = c.get_entity_type(next_bid) if next_bid else None
+        next_team = c.get_team(next_bid) if next_bid else None
+        
+        passable = False
+        if next_team == c.get_team():
+            if next_bldg in (EntityType.CORE, EntityType.FOUNDRY):
+                passable = True
+            elif next_bldg in (EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
+                passable = True
+
+        if not passable:
+            if next_bldg not in (None, EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR) and next_team == c.get_team():
+                self.path = get_conveyor_path(my_pos, target_pos, c, self)
+                self.path_idx = 0
+                return False
+
+            if c.get_action_cooldown() == 0:
+                ti, _ = c.get_global_resources()
+                cost, _ = c.get_conveyor_cost()
+                if ti >= cost:
+                    if self.path_idx + 2 < len(self.path):
+                        next_dir = next_pos.direction_to(self.path[self.path_idx + 2])
+                    else:
+                        next_dir = Direction.NORTH
+                        
+                    if next_bldg is not None and next_team == c.get_team() and c.can_destroy(next_pos):
+                        c.destroy(next_pos)
+                    if c.can_build_conveyor(next_pos, next_dir):
+                        c.build_conveyor(next_pos, next_dir)
+                        self.bldg_map[(next_pos.x, next_pos.y)] = EntityType.CONVEYOR
+                        self.team_map[(next_pos.x, next_pos.y)] = c.get_team()
+                        self.dir_map[(next_pos.x, next_pos.y)] = next_dir
+                    else:
+                        self.stuck_counter += 1
+                        if self.stuck_counter > 10:
+                            self._dodge_and_repath_conveyor(c, target_pos)
+            return False
+
+        if c.get_move_cooldown() == 0:
+            if c.can_move(expected_dir):
+                c.move(expected_dir)
+                self.path_idx += 1
+                self.stuck_counter = 0
+            else:
+                self.stuck_counter += 1
+                if self.stuck_counter > 10:
+                    self._dodge_and_repath_conveyor(c, target_pos)
+                    
+        return False
+
+    def _step_walk_path(self, c: Controller):
+        my_pos = c.get_position()
+        if not self.walk_path or self.path_idx >= len(self.walk_path) - 1:
+            return True
+            
+        curr_pos = self.walk_path[self.path_idx]
+        if my_pos != curr_pos:
+            self.walk_path = get_walk_path(my_pos, self.target, c, self)
+            self.path_idx = 0
+            if not self.walk_path: return True
+            
+        next_pos = self.walk_path[self.path_idx + 1]
+        
+        if c.is_in_vision(next_pos):
+            n_env = c.get_tile_env(next_pos)
+            n_bid = c.get_tile_building_id(next_pos)
+            n_bldg = c.get_entity_type(n_bid) if n_bid else None
+            n_team = c.get_team(n_bid) if n_bid else None
+            
+            is_enemy_road = n_bldg in (EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR) and n_team != c.get_team()
+            if n_env == Environment.WALL or (n_bldg and n_team != c.get_team() and not is_enemy_road):
+                self.walk_path = []
+                return False
+                
+            if n_bldg is None and n_env == Environment.EMPTY and c.get_action_cooldown() == 0:
+                ti, _ = c.get_global_resources()
+                cost, _ = c.get_road_cost()
+                if ti >= cost and c.can_build_road(next_pos):
+                    c.build_road(next_pos)
+                    
+        if c.get_move_cooldown() == 0 and c.is_tile_passable(next_pos):
+            d = my_pos.direction_to(next_pos)
+            if c.can_move(d):
+                c.move(d)
+                self.path_idx += 1
+                self.stuck_counter = 0
+            else:
+                self.stuck_counter += 1
+                if self.stuck_counter > 5:
+                    self._dodge(c)
+        elif not c.is_tile_passable(next_pos):
+            self.stuck_counter += 1
+            if self.stuck_counter > 5:
+                self._dodge(c)
+        return False
+
+    def _dodge(self, c: Controller):
+        for dodge_dir in ALL_DIRS:
+            if c.can_move(dodge_dir):
+                c.move(dodge_dir)
+                break
+        self.walk_path = []
+        self.stuck_counter = 0
+        
+    def _dodge_and_repath_conveyor(self, c: Controller, target_pos):
+        for dodge_dir in ALL_DIRS:
+            if c.can_move(dodge_dir):
+                c.move(dodge_dir)
+                break
+        self.path = get_conveyor_path(c.get_position(), target_pos, c, self)
+        self.path_idx = 0
+        self.stuck_counter = 0
+
+    def find_new_ore_target(self, c: Controller, player):
+        my_pos = c.get_position()
+        best_dist = float('inf')
+        best_ore = None
+        
+        my_quadrant = c.get_id() % 4
+        cx, cy = self.core_pos.x, self.core_pos.y
+        wants_axionite = (c.get_id() % 4 == 0)
+        
+        ore_types = [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]
+        if wants_axionite:
+            ore_types = [Environment.ORE_AXIONITE, Environment.ORE_TITANIUM]
+            
+        for primary_ore in ore_types:
+            for (x, y), env in player.env_map.items():
+                if env == primary_ore:
+                    pos = Position(x, y)
+                    if player.bldg_map.get((x, y)) == EntityType.HARVESTER:
+                        continue
+                    
+                    dist = my_pos.distance_squared(pos)
+                    
+                    is_right = x > cx
+                    is_bottom = y > cy
+                    ore_quadrant = (1 if is_right else 0) + (2 if is_bottom else 0)
+                    if my_quadrant != ore_quadrant:
+                        dist += 150
+                        
+                    noise = (pos.x * 73 + pos.y * 31 + c.get_id() * 11) % 50
+                    dist += noise
+                    
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_ore = pos
+            if best_ore:
+                return best_ore
+                
+        return self._get_explore_target(c)
+
+    def _get_explore_target(self, c):
+        unknowns = []
+        for x in range(0, self.width, 3):
+            for y in range(0, self.height, 3):
+                if (x, y) not in self.env_map:
+                    unknowns.append(Position(x, y))
+        if unknowns:
+            return random.choice(unknowns)
+        return Position(random.randint(0, self.width-1), random.randint(0, self.height-1))
