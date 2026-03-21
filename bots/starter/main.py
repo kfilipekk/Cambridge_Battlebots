@@ -97,16 +97,16 @@ class Player:
         ti, ax = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
         
-        ##tHE FIX: Hard cap at 15 bots to prevent hyper-inflation and core gridlock!
-        dynamic_bot_cap = min(15, 5 + int(ti / 400))
-        
+        ##match opponent bot cap for better map presence, scales with Ti buffer!
+        dynamic_bot_cap = min(25, 8 + int(ti / 200))
+
         if self.spawned_bots < dynamic_bot_cap:
             builder_cost = int(10 * scale)
             harvester_cost = int(80 * scale)
-            
-            ##keep a smaller buffer early on so we don't stall early expansion
-            buffer = 30 * scale if ti < 500 else 100 * scale 
-            
+
+            ##keep a large buffer so we never stall returning bots!
+            buffer = 150 * scale
+
             if ti > builder_cost + harvester_cost + buffer:
                 spawn_dirs = list(CARDINALS)
                 random.shuffle(spawn_dirs)
@@ -342,14 +342,27 @@ class Player:
             dist = my_pos.distance_squared(self.target_ore)
             ##must be exactly cardinal distance 1 to ensure conveyor connects
             if dist == 1:
+                ##pRUNE HISTORY FIRST to minimize loopbacks and path cost!
+                opt_hist = [self.history[0]]
+                curr_idx = 0
+                while curr_idx < len(self.history) - 1:
+                    furthest_adj = curr_idx + 1
+                    for j in range(len(self.history)-1, curr_idx, -1):
+                        if self.history[curr_idx].distance_squared(self.history[j]) == 1:
+                            furthest_adj = j
+                            break
+                    opt_hist.append(self.history[furthest_adj])
+                    curr_idx = furthest_adj
+
                 ti, _ = c.get_global_resources()
                 scale = c.get_scale_percent() / 100.0
-                project_cost = int(80 * scale) + (len(self.history) * int(3 * scale))
-                
+                project_cost = int(80 * scale) + (len(opt_hist) * int(3 * scale))
+
                 if ti >= project_cost and c.can_build_harvester(self.target_ore):
                     c.build_harvester(self.target_ore)
-                    self.state = "RETURN" 
+                    self.state = "RETURN"
                     self.target_ore = None
+                    self.history = opt_hist
                 else:
                     self.target_ore = None
                     self._turn()
@@ -374,10 +387,16 @@ class Player:
 
     def try_step(self, c: Controller, d: Direction):
         my_pos = c.get_position()
-        
+
         ti, _ = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
-        can_afford_road = ti >= int(1 * scale) + (15 * scale)
+        
+        ##prevent wandering bots from starving returning bots
+        if self.target_ore is not None:
+            ##overestimate return cost to prevent starvation of the global pool
+            can_afford_road = ti >= int(120 * scale)
+        else:
+            can_afford_road = ti >= int(160 * scale)
 
         if d is not None and d in CARDINALS:
             self.heading = d
