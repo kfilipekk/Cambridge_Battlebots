@@ -101,13 +101,15 @@ class Player:
         dynamic_bot_cap = min(25, 8 + int(ti / 200))
 
         if self.spawned_bots < dynamic_bot_cap:
-            builder_cost = int(10 * scale)
-            harvester_cost = int(80 * scale)
-
-            ##keep a large buffer so we never stall returning bots!
-            buffer = 150 * scale
-
-            if ti > builder_cost + harvester_cost + buffer:
+            builder_cost = c.get_builder_bot_cost()[0]
+            if self.spawned_bots == 0:
+                buffer = 0
+            else:
+                harvester_cost = c.get_harvester_cost()[0]
+                conv_cost = c.get_conveyor_cost()[0]
+                buffer = harvester_cost + (20 * conv_cost) + 60
+            print(f"CORE TURN {c.get_current_round()} ti={ti} cost={builder_cost} buf={buffer}", file=sys.stderr)
+            if ti > builder_cost + buffer:
                 spawn_dirs = list(CARDINALS)
                 random.shuffle(spawn_dirs)
                 for d in spawn_dirs:
@@ -123,13 +125,8 @@ class Player:
         
         ##wait for a massive titanium reserve before building
         ##if we double our costs, we need cash to survive the transition.
-        if ti < (120 * scale) + 1000: 
+        if ti < (120 * scale) + 400:
             return False
-            
-        ##we need Raw Axionite flowing into the core first
-        if ax < 10:
-            return False
-
         core_pos = self.history[0] if self.history else c.get_position()
         
         ##ensure we only ever build one foundry
@@ -140,11 +137,14 @@ class Player:
                     foundry_claimed = True
                     break
                     
-        for tile in c.get_nearby_tiles(25):
-            bid = c.get_tile_building_id(tile)
-            if bid and c.get_entity_type(bid) == getattr(EntityType, 'AXIONITE_FOUNDRY', None):
-                foundry_claimed = True
-                break
+        try:
+            for tile in c.get_nearby_tiles(25):
+                bid = c.get_tile_building_id(tile)
+                if bid and c.get_entity_type(bid) == getattr(EntityType, 'AXIONITE_FOUNDRY', getattr(EntityType, 'FOUNDRY', None)):
+                    foundry_claimed = True
+                    break
+        except Exception:
+            pass
 
         if foundry_claimed:
             return False 
@@ -165,10 +165,8 @@ class Player:
     def assign_role(self, c: Controller):
         round_num = c.get_current_round()
         roll = random.random()
-        
-        if round_num > 700 and roll < 0.25:
-            self.role = "SABOTEUR"
-        elif round_num > 250 and roll < 0.40:
+
+        if round_num > 250 and roll < 0.40:
             self.role = "REFINER"
         else:
             self.role = "MINER"
@@ -390,19 +388,23 @@ class Player:
 
         ti, _ = c.get_global_resources()
         scale = c.get_scale_percent() / 100.0
-        
+
+        conv_cost = c.get_conveyor_cost()[0]
+        harv_cost = c.get_harvester_cost()[0]
+
         ##prevent wandering bots from starving returning bots
         if self.target_ore is not None:
             ##overestimate return cost to prevent starvation of the global pool
-            can_afford_road = ti >= int(120 * scale)
+            can_afford_road = ti >= harv_cost + (len(self.history) * conv_cost) + 25
         else:
-            can_afford_road = ti >= int(160 * scale)
+            reserve_needed = harv_cost + (20 * conv_cost) + 60
+            can_afford_road = ti >= reserve_needed
 
         if d is not None and d in CARDINALS:
             self.heading = d
-            
-        ##5% chance to peel off the wall into open space
-        if self.state == "WANDER" and can_afford_road and random.random() < 0.05:
+
+        ##2% chance to peel off the wall into open space
+        if self.state == "WANDER" and can_afford_road and random.random() < 0.02:
             idx = CARDINALS.index(self.heading)
             self.heading = CARDINALS[(idx + random.choice([-1, 1])) % 4]
             
@@ -447,15 +449,42 @@ class Player:
     def do_return(self, c: Controller):
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
             return
-            
+
         my_pos = c.get_position()
         my_building = c.get_tile_building_id(my_pos)
-        
+
         if len(self.history) == 0:
+            ##---> CRITICAL FIX: Ensure the final conveyor connects to the Core! <---
+            core_d = None
+            for d in ALL_DIRS:
+                np = my_pos.add(d)
+                if c.is_in_vision(np):
+                    bid = c.get_tile_building_id(np)
+                    if bid is not None and c.get_entity_type(bid) == EntityType.CORE:
+                        core_d = d
+                        break
+
+            if core_d is not None:
+                needs_conveyor = True
+                if my_building is not None:
+                    b_type = c.get_entity_type(my_building)
+                    if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.CORE):
+                        needs_conveyor = False
+
+                if needs_conveyor:
+                    ti, ax = c.get_global_resources()
+                    conv_cost = c.get_conveyor_cost()[0]
+                    if ti >= conv_cost:
+                        if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
+                            if c.can_destroy(my_pos):
+                                c.destroy(my_pos)
+                        if c.can_build_conveyor(my_pos, core_d):
+                            c.build_conveyor(my_pos, core_d)
+
             self.state = "WANDER"
             self.assign_role(c)
             self.history.append(my_pos)
-            
+
             ##cORE DEFENSE: Passive Turret placement
             ti, ax = c.get_global_resources()
             scale = c.get_scale_percent() / 100.0
