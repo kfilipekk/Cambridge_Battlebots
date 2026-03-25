@@ -98,7 +98,7 @@ class Player:
         scale = c.get_scale_percent() / 100.0
         
         ##match opponent bot cap for better map presence, scales with Ti buffer!
-        dynamic_bot_cap = min(25, 8 + int(ti / 200))
+        dynamic_bot_cap = min(26, 8 + int(ti / 100))
 
         if self.spawned_bots < dynamic_bot_cap:
             builder_cost = c.get_builder_bot_cost()[0]
@@ -107,8 +107,7 @@ class Player:
             else:
                 harvester_cost = c.get_harvester_cost()[0]
                 conv_cost = c.get_conveyor_cost()[0]
-                buffer = harvester_cost + (20 * conv_cost) + 60
-            print(f"CORE TURN {c.get_current_round()} ti={ti} cost={builder_cost} buf={buffer}", file=sys.stderr)
+                buffer = harvester_cost + (20 * conv_cost) + 40
             if ti > builder_cost + buffer:
                 spawn_dirs = list(CARDINALS)
                 random.shuffle(spawn_dirs)
@@ -125,8 +124,9 @@ class Player:
         
         ##wait for a massive titanium reserve before building
         ##if we double our costs, we need cash to survive the transition.
-        if ti < (120 * scale) + 400:
+        if ti < (120 * scale) + 200:
             return False
+
         core_pos = self.history[0] if self.history else c.get_position()
         
         ##ensure we only ever build one foundry
@@ -181,7 +181,7 @@ class Player:
             valid_dirs = []
             for d in CARDINALS:
                 np = c.get_position().add(d)
-                if c.is_tile_passable(np) and c.get_tile_building_id(np) is None:
+                if c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
                     valid_dirs.append(d)
             self.heading = random.choice(valid_dirs) if valid_dirs else random.choice(CARDINALS)
 
@@ -200,7 +200,7 @@ class Player:
                 valid_dirs = []
                 for d in CARDINALS:
                     np = c.get_position().add(d)
-                    if c.is_tile_passable(np) and c.get_tile_building_id(np) is None:
+                    if c.is_tile_empty(np) and c.get_tile_building_id(np) is None:
                         valid_dirs.append(d)
                 if valid_dirs and self.heading not in valid_dirs:
                      self.heading = random.choice(valid_dirs)
@@ -311,9 +311,9 @@ class Player:
                     if c.get_tile_building_id(tile) is None:
                         ##miners prioritize Titanium. Refiners prioritize Axionite!
                         if self.role == "REFINER":
-                            dist_penalty = -99999 if env == Environment.ORE_AXIONITE else 99999
+                            dist_penalty = -100 if env == Environment.ORE_AXIONITE else 0
                         else:
-                            dist_penalty = -99999 if env == Environment.ORE_TITANIUM else 0
+                            dist_penalty = -100 if env == Environment.ORE_TITANIUM else 0
                             
                         has_core = False
                         for cx in range(-1, 2):
@@ -353,18 +353,23 @@ class Player:
                     curr_idx = furthest_adj
 
                 ti, _ = c.get_global_resources()
-                scale = c.get_scale_percent() / 100.0
-                project_cost = int(80 * scale) + (len(opt_hist) * int(3 * scale))
+                harv_cost = c.get_harvester_cost()[0]
+                conv_cost = c.get_conveyor_cost()[0]
 
-                if ti >= project_cost and c.can_build_harvester(self.target_ore):
+                ##exact Ti needed for Harvester + Conveyors back
+                required_ti = harv_cost + (len(opt_hist) * conv_cost) + 10
+
+                if ti >= required_ti and c.can_build_harvester(self.target_ore):
                     c.build_harvester(self.target_ore)
                     self.state = "RETURN"
                     self.target_ore = None
                     self.history = opt_hist
                 else:
-                    self.target_ore = None
-                    self._turn()
-                    self.try_step(c, self.heading)
+                    ##if we can't afford it yet, just WAIT and camp the spot!
+                    if c.is_in_vision(self.target_ore) and c.get_tile_building_id(self.target_ore) is not None:
+                        self.target_ore = None
+                        self._turn()
+                        self.try_step(c, self.heading)
                 return
             else:
                 best_d = None
@@ -486,18 +491,6 @@ class Player:
             self.history.append(my_pos)
 
             ##cORE DEFENSE: Passive Turret placement
-            ti, ax = c.get_global_resources()
-            scale = c.get_scale_percent() / 100.0
-            
-            if ti >= int(150 * scale): ##ensure we do not starve the economy early game
-                out_d = random.choice(CARDINALS)
-                build_pos = my_pos.add(out_d)
-                if c.is_tile_empty(build_pos) and c.get_tile_building_id(build_pos) is None:
-                    if ax >= int(15 * scale) and c.can_build_breach(build_pos, out_d):
-                        c.build_breach(build_pos, out_d)
-                    elif c.can_build_sentinel(build_pos, out_d):
-                        c.build_sentinel(build_pos, out_d)
-            return
             
         target_pos = self.history[-1]
         
