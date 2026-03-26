@@ -20,6 +20,7 @@ class Player:
         self.spawned_bots = 0
         self.role = "MINER"
         self.turn_offset = random.choice([-1, 1])
+        self.bridge_target = None
         
     def update_cartography(self, c: Controller):
         global _KNOWLEDGE_MAP
@@ -347,6 +348,7 @@ class Player:
                     self.state = "RETURN" 
                     self.target_ore = None
                     self.history = opt_hist
+                    self.bridge_target = None
                 else:
                     ##if we can't afford it yet, just WAIT and camp the spot!
                     if c.is_in_vision(self.target_ore) and c.get_tile_building_id(self.target_ore) is not None:
@@ -436,112 +438,72 @@ class Player:
         my_pos = c.get_position()
         my_building = c.get_tile_building_id(my_pos)
         
-        if len(self.history) == 0:
-            ##---> CRITICAL FIX: Ensure the final conveyor connects to the Core! <---
-            core_d = None
-            for d in ALL_DIRS:
-                np = my_pos.add(d)
-                if c.is_in_vision(np):
-                    bid = c.get_tile_building_id(np)
-                    if bid is not None and c.get_entity_type(bid) == EntityType.CORE:
-                        core_d = d
-                        break
-                        
-            if core_d is not None:
-                needs_conveyor = True
-                if my_building is not None:
-                    b_type = c.get_entity_type(my_building)
-                    if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.CORE):
-                        needs_conveyor = False
-                        
-                if needs_conveyor:
-                    ti, ax = c.get_global_resources()
-                    conv_cost = c.get_conveyor_cost()[0]
-                    if ti < conv_cost:
-                        return 
-                        
-                    if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
-                        if c.can_destroy(my_pos):
-                            c.destroy(my_pos)
-                            
-                    use_armoured = False
-                    arm_cost = c.get_armoured_conveyor_cost()
-                    built_conveyor = False
-                    if ax >= arm_cost[1] and ti >= arm_cost[0]:
-                        if hasattr(c, 'can_build_armoured_conveyor') and c.can_build_armoured_conveyor(my_pos, core_d):
-                            c.build_armoured_conveyor(my_pos, core_d)
-                            use_armoured = True
-                            built_conveyor = True
-                            
-                    if not use_armoured and c.can_build_conveyor(my_pos, core_d):
-                        c.build_conveyor(my_pos, core_d)
-                        built_conveyor = True
-                        
-                    if not built_conveyor:
-                        return
+        ##determine if the core is right nearby
+        core_pos = None
+        for tile in c.get_nearby_tiles(9):
+            bid = c.get_tile_building_id(tile)
+            if bid is not None and c.get_entity_type(bid) == EntityType.CORE:
+                core_pos = tile
+                break
 
+        ##if we reached our current targeted bridge landing pad, clear it so we prepare the next jump
+        if getattr(self, 'bridge_target', None) == my_pos:
+            self.bridge_target = None
+            
+        ##determine if we need to lay down a new Bridge network link
+        needs_transport = False
+        if getattr(self, 'bridge_target', None) is None:
+            needs_transport = True
+            if my_building is not None:
+                b_type = c.get_entity_type(my_building)
+                ##we do not build if we are already standing on an established transport pipeline or the Core
+                if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.CORE, EntityType.HARVESTER):
+                    needs_transport = False
+
+        if needs_transport:
+            best_target = None
+            ##if the core is within our 3-tile bridge snapping range, jump straight to it!
+            if core_pos and my_pos.distance_squared(core_pos) <= 9:
+                best_target = core_pos
+            else:
+                ##find the furthest point backwards along our walking history we can jump to
+                for i in range(len(self.history)):
+                    if my_pos.distance_squared(self.history[i]) <= 9:
+                        best_target = self.history[i]
+                        break
+            
+            if best_target is not None and best_target != my_pos:
+                ti, ax = c.get_global_resources()
+                bridge_cost = c.get_bridge_cost()[0]
+                if ti < bridge_cost:
+                    return ##await resources from the global pool
+                    
+                if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
+                    if c.can_destroy(my_pos):
+                        c.destroy(my_pos)
+                        
+                if hasattr(c, 'can_build_bridge') and c.can_build_bridge(my_pos, best_target):
+                    c.build_bridge(my_pos, best_target)
+                    self.bridge_target = best_target
+                else:
+                    return ##blocked or unable to build, hold position
+            elif best_target is None:
+                pass
+
+        if len(self.history) == 0:
             self.state = "WANDER"
             self.assign_role(c)
             self.history = [my_pos]
+            self.bridge_target = None
             return
             
         target_pos = self.history[-1]
         
-        ##eARLY CORE ARRIVAL FIX
-        target_building = None
-        if c.is_in_vision(target_pos):
-            target_building = c.get_tile_building_id(target_pos)
-            
-        if target_building is not None and c.get_entity_type(target_building) == EntityType.CORE:
-            d = None
-            for cd in ALL_DIRS:
-                if my_pos.add(cd) == target_pos:
-                    d = cd
-                    break
-                    
-            if d is not None:
-                needs_conveyor = True
-                if my_building is not None:
-                    b_type = c.get_entity_type(my_building)
-                    if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.CORE, EntityType.HARVESTER):
-                        needs_conveyor = False
-                
-                if needs_conveyor:
-                    ti, ax = c.get_global_resources()
-                    conv_cost = c.get_conveyor_cost()[0]
-                    if ti < conv_cost:
-                        return 
-                        
-                    if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
-                        if c.can_destroy(my_pos):
-                            c.destroy(my_pos)
-                            
-                    use_armoured = False
-                    arm_cost = c.get_armoured_conveyor_cost()
-                    built_conveyor = False
-                    if ax >= arm_cost[1] and ti >= arm_cost[0]:
-                        if hasattr(c, 'can_build_armoured_conveyor') and c.can_build_armoured_conveyor(my_pos, d):
-                            c.build_armoured_conveyor(my_pos, d)
-                            use_armoured = True
-                            built_conveyor = True
-                            
-                    if not use_armoured and c.can_build_conveyor(my_pos, d):
-                        c.build_conveyor(my_pos, d)
-                        built_conveyor = True
-                        
-                    if not built_conveyor:
-                        return
-            
-            self.history = [my_pos]
-            self.state = "WANDER"
-            self.assign_role(c) 
-            return
-
-        ##sTANDARD RETURN LOGIC
+        ##move logic allowing us to skip intermediate builds
         if my_pos == target_pos:
             self.history.pop()
             return
-
+            
         d = None
         for cd in ALL_DIRS:
             if my_pos.add(cd) == target_pos:
@@ -551,43 +513,7 @@ class Player:
         if d is None:
             self.history.pop()
             return
-
-        needs_conveyor = True
-        if my_building is not None:
-            b_type = c.get_entity_type(my_building)
-            if b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR):
-                needs_conveyor = False
-            elif b_type in (EntityType.CORE, EntityType.HARVESTER):
-                needs_conveyor = False                
-        
-        if needs_conveyor:
-            ti, ax = c.get_global_resources()
-            conv_cost = c.get_conveyor_cost()[0]
-            if ti < conv_cost:
-                return 
-                
-            if my_building is not None and c.get_entity_type(my_building) == EntityType.ROAD:
-                if c.can_destroy(my_pos):
-                    c.destroy(my_pos)
-                    
-            use_armoured = False
-            arm_cost = c.get_armoured_conveyor_cost()
-            built_conveyor = False
-            if ax >= arm_cost[1] and ti >= arm_cost[0]:
-                if hasattr(c, 'can_build_armoured_conveyor') and c.can_build_armoured_conveyor(my_pos, d):
-                    c.build_armoured_conveyor(my_pos, d)
-                    use_armoured = True
-                    built_conveyor = True
-                    
-            if not use_armoured and c.can_build_conveyor(my_pos, d):
-                c.build_conveyor(my_pos, d)
-                built_conveyor = True
-                
-            if not built_conveyor:
-                ##failed to construct the conveyor (tile blocked, out of Ti, etc). DO NOT LEAVE A GAP!
-                return
-
-        ##if a Wandering bot is in our way, just wait.
+            
         if c.can_move(d):
             c.move(d)
             self.history.pop()
