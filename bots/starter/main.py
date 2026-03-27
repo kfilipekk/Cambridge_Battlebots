@@ -167,13 +167,27 @@ class Player:
         round_num = c.get_current_round()
         roll = random.random()
         
-        ##disabled Saboteur until we fix its ammo routing. Focus entirely on economy!
-        if round_num > 250 and roll < 0.40:
-            self.role = "REFINER"
+        ##25% of bots spawned early game become Rushers to hit the enemy Core.
+        ##10% of late-game bots become Saboteurs to chew enemy pipelines.
+        if round_num < 150 and roll < 0.25:
+            self.role = "RUSHER"
+        elif round_num > 250 and roll < 0.10:
+            self.role = "SABOTEUR"
         else:
             self.role = "MINER"
 
     def run_builder(self, c: Controller):
+        my_pos = c.get_position()
+        
+        ##uNIVERSAL LAWNMOWER: Devour enemy infrastructure dynamically without costing an action!
+        bid = c.get_tile_building_id(my_pos)
+        if bid is not None:
+            if hasattr(c, 'get_team') and c.get_team(bid) != c.get_team():
+                try: 
+                    c.destroy(my_pos) 
+                except Exception: 
+                    pass
+
         if self.state == "INIT":
             self.state = "WANDER"
             self.history.append(c.get_position())
@@ -189,6 +203,10 @@ class Player:
 
         if self.role == "SABOTEUR":
             self.do_sabotage(c)
+            return
+            
+        if self.role == "RUSHER":
+            self.do_rusher(c)
             return
 
         if self.state == "WANDER":
@@ -279,6 +297,53 @@ class Player:
         best_d = my_pos.direction_to(enemy_core_guess)
         
         if best_d and not self.try_step(c, best_d):
+            self.try_step(c, self.heading)
+
+    def do_rusher(self, c: Controller):
+        if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
+            return
+            
+        my_pos = c.get_position()
+        ti, ax = c.get_global_resources()
+        scale = c.get_scale_percent() / 100.0
+        
+        ##determine enemy core location via symmetry
+        w = c.get_map_width()
+        h = c.get_map_height()
+        start_pos = self.history[0] if self.history else my_pos
+        enemy_core_guess = Position(w - 1 - start_pos.x, h - 1 - start_pos.y)
+        
+        ##are we close to the core? Start spamming cheap barriers around it to suffocate them!
+        dist_sq = my_pos.distance_squared(enemy_core_guess)
+        if dist_sq <= 49: 
+            enemy_dir = my_pos.direction_to(enemy_core_guess)
+            build_pos = my_pos.add(enemy_dir)
+            
+            ##if we see ANY enemy building directly in front of us, eat it for free!
+            bid = c.get_tile_building_id(build_pos)
+            if bid is not None:
+                if hasattr(c, 'get_team') and c.get_team(bid) != c.get_team():
+                    try: 
+                        c.destroy(build_pos)
+                        return
+                    except Exception: pass
+            
+            ##sub-strategy: If there's an open tile near their core, drop a barrier!
+            ##it severely disrupts their returning bots and chokes their core.
+            if c.is_tile_empty(build_pos):
+                if ti >= int(3 * scale) and c.can_build_barrier(build_pos):
+                    c.build_barrier(build_pos)
+                else:
+                    self._turn()
+                    self.try_step(c, self.heading)
+                return
+        
+        ##march relentlessly toward the enemy core
+        best_d = my_pos.direction_to(enemy_core_guess)
+        if best_d and not self.try_step(c, best_d):
+            ##try to route around obstacles
+            idx = CARDINALS.index(self.heading) if self.heading in CARDINALS else 0
+            self.heading = CARDINALS[(idx + random.choice([-1, 1])) % 4]
             self.try_step(c, self.heading)
 
     def do_wander(self, c: Controller):
