@@ -1,0 +1,526 @@
+Cambridge Battlecode — Complete Reference
+What Is This Game?
+Cambridge Battlecode is a programming competition. You write a Python bot that controls an autonomous mining fleet on Titan (Saturn's moon). Two bots compete head-to-head on a grid map. The primary goal is to destroy the enemy's core while building up your own economy. Games last at most 2000 rounds.
+
+The Map
+
+Rectangular grid, anywhere from 20×20 to 50×50 tiles.
+Top-left corner is position (0, 0). X increases east, Y increases south.
+Always symmetric — either reflected or rotated.
+Each tile is one of four types:
+
+Empty — you can build anything here.
+Wall — impassable, nothing can be built here.
+Titanium ore — a harvester can be built here to mine titanium.
+Axionite ore — a harvester can be built here to mine raw axionite.
+
+
+
+
+Win Conditions
+A game ends when one core reaches 0 HP, or after 2000 rounds. If both cores survive to round 2000, tiebreakers are applied in this exact order:
+
+Total refined axionite delivered to your core.
+Total titanium delivered to your core.
+Number of harvesters currently alive.
+Total axionite currently stored (in buildings, not delivered).
+Total titanium currently stored.
+Coin flip (random).
+
+Winning round 2000 by tiebreaker is a real strategy — maximising harvester count and delivered resources matters even if you never destroy the enemy.
+
+Resources
+Titanium
+
+Main building resource. You start with 1000 titanium, 0 axionite.
+Harvested from titanium ore deposits by harvesters.
+Delivered to your core via conveyor chains.
+Used to build almost everything.
+
+Raw Axionite
+
+Mined from axionite ore deposits by harvesters.
+Cannot be used directly for advanced construction — must be refined.
+Can be fed to turrets as ammo (less effective than refined axionite).
+Can be fed to an axionite foundry along with titanium to produce refined axionite.
+
+Refined Axionite
+
+Produced by axionite foundries (1 stack titanium + 1 stack raw axionite → 1 stack refined axionite).
+Used for powerful buildings (armoured conveyors, breach turrets) and as superior turret ammo.
+The tiebreaker prioritises this resource, so getting axionite flowing is very valuable.
+
+Resource Stacks
+
+All resources move in stacks of 10. You can't move partial stacks.
+At the end of each round, buildings that hold resources automatically push one stack to an adjacent accepting building.
+Resources can accidentally flow into enemy buildings — be careful with conveyor placement near borders.
+
+
+Cost Scaling
+Every single thing you build permanently increases the cost of everything else. The formula is:
+actual cost = floor(scale × base cost)
+Scale starts at 1.0 (100%). Each entity adds to it additively:
+EntityScale increaseRoad+0.5%Conveyor, splitter, armoured conveyor, bridge, barrier+1% eachBuilder bot, harvester, gunner, sentinel, breach, launcher+10% eachAxionite foundry+100% each
+Example: if you've built 3 builder bots and 5 roads, your scale is 1.0 + 0.3 + 0.025 = 1.325, meaning everything costs 32.5% more than base.
+When an entity is destroyed, its scaling contribution is removed. So destroying your own inefficient buildings can reduce costs.
+You can query your current scale with: c.get_scale_percent() (returns 100.0 at base).
+
+Units vs Buildings
+Units run code — they each get their own instance of your Player class, and run() is called on each one every round. Units are: core, builder bots, gunners, sentinels, breaches, launchers.
+Buildings are immovable and don't run code (except the core and turrets, which are both). Buildings are: harvesters, foundries, conveyors, splitters, bridges, armoured conveyors, roads, barriers, markers.
+Harvesters are NOT units — they operate automatically and never run your code.
+Turn order: units act in the order they were spawned. After all units act, resources are distributed.
+
+The Core
+
+Your central building. If it reaches 0 HP, you lose immediately.
+It's a 3×3 building. Its position is the centre tile.
+HP: 500
+Vision radius²: 36 (can see a large area around itself)
+Action radius²: 8 (measured from centre — can build/spawn on any of its 9 tiles)
+
+Spawning
+The core can spawn one builder bot per round on any of the 9 tiles it occupies. Spawning costs one action cooldown. c.can_spawn(pos) and c.spawn_builder(pos).
+Resource delivery
+Resources only join your team's global pool when delivered to the core via conveyors. Harvesters → conveyors → core.
+
+Builder Bot
+The only mobile unit. Costs 10 titanium base (+10% scale).
+
+HP: 30
+Vision radius²: 20
+Action radius²: 2 (adjacent tiles including diagonals)
+Move cooldown: 1 (can move once per round if cooldown is 0)
+
+Movement
+Builder bots can only walk on:
+
+Conveyors (any direction, either team)
+Roads (either team)
+The allied core tiles
+
+They CANNOT walk on empty tiles, walls, ore tiles, or most buildings. You must build a road or conveyor first.
+Moving increases move cooldown by 1. Cooldowns decrease by 1 at the end of each round.
+Actions (one per round, requires action cooldown == 0)
+Build — build any building or turret on a tile within action radius. The tile must be empty (no existing building). Exception: you can build roads/conveyors on your own tile while standing on it.
+Heal — restore 10 HP to all friendly entities on a target tile within action radius.
+Destroy — destroy any allied building within action radius. This does NOT cost action cooldown, and can be done multiple times per round.
+Self-destruct — destroys the bot, deals 20 damage to the building on its tile. Code after c.self_destruct() does not run.
+Markers
+All units (including builder bots) can place one free marker per round within action radius. This does NOT use action cooldown.
+
+Buildings You Can Build
+Road
+
+HP: 10 | Base cost: 1 Ti | Scale: +0.5%
+Makes a tile walkable for builder bots.
+Cheapest building. Spam these to create paths.
+
+Conveyor
+
+HP: 20 | Base cost: 3 Ti | Scale: +1%
+Also walkable.
+Faces one of 8 directions.
+Accepts resources from any of its 3 non-output sides. Pushes contents to adjacent building in its direction.
+This is how you get resources from harvesters to your core.
+c.build_conveyor(pos, Direction.SOUTH)
+
+Splitter
+
+HP: 20 | Base cost: 6 Ti | Scale: +1%
+Accepts input from one direction (the back). Outputs to three rotating directions (the other three), cycling to balance load.
+Useful for routing resources to multiple destinations.
+c.build_splitter(pos, direction)
+
+Bridge
+
+HP: 20 | Base cost: 10 Ti | Scale: +1%
+Outputs to a specific target tile within distance² ≤ 9 (roughly 3 tiles). Bypasses directional restrictions — can feed any building.
+Accepts input from all directions.
+c.build_bridge(pos, target_pos)
+
+Armoured Conveyor
+
+HP: 50 | Base cost: 10 Ti + 5 refined axionite | Scale: +1%
+Same as a regular conveyor but much higher HP. Good for protecting key resource routes.
+
+Harvester
+
+HP: 30 | Base cost: 80 Ti | Scale: +10%
+Must be placed on an ore tile. Outputs one stack of that ore type every 4 rounds, starting immediately when built.
+Outputs to an adjacent building. Rotates between output directions to balance.
+Cannot be built unless the tile is an ore tile.
+c.can_build_harvester(pos) checks both that it's an ore tile AND you have resources.
+
+Axionite Foundry
+
+HP: 50 | Base cost: 120 Ti | Scale: +100%
+Takes 1 stack titanium + 1 stack raw axionite → outputs 1 stack refined axionite.
+Accepts input from any side. Outputs to any adjacent accepting building.
+WARNING: Each foundry doubles your current cost multiplier relative to base. Building two foundries means +200% scaling just from them. Plan carefully.
+
+Barrier
+
+HP: 30 | Base cost: 3 Ti | Scale: +1%
+Purely defensive / territorial. Blocks space, has decent HP. Good for forcing enemies to go around or spend resources destroying it.
+c.build_barrier(pos)
+
+Marker
+
+HP: 1 | Cost: Free | Scale: none
+Stores a single unsigned 32-bit integer (0 to 4,294,967,295).
+Placed for free, once per round per unit, without using action cooldown.
+Any allied unit can read it.
+The only way units communicate with each other (no shared global variables).
+Enemy teams can overwrite your markers.
+c.place_marker(pos, value) and c.get_marker_value(id)
+
+
+Turrets
+All turrets except the launcher face one of 8 directions. All turrets are both units and buildings. Ammo is fed via conveyors from any direction except the direction the turret faces (diagonal turrets can be fed from all four sides). Turrets only accept ammo when completely empty.
+Gunner
+
+HP: 40 | Base cost: 10 Ti | Scale: +10%
+Fires at the closest non-empty tile in its facing direction.
+Damage: 10 with titanium ammo, 20 with refined axionite ammo.
+Reload: 1 round (fires every round if loaded).
+Ammo per shot: 2.
+Vision/attack radius²: 13.
+c.build_gunner(pos, direction)
+
+Sentinel
+
+HP: 30 | Base cost: 15 Ti | Scale: +10%
+Long range, lower damage. Hits all tiles within 1 tile (Chebyshev) of the straight line in its facing direction, within vision range.
+Damage: 20.
+Reload: 4 rounds (fires every 4 rounds).
+Ammo per shot: 10.
+Vision/attack radius²: 32 (very long range).
+Special: with refined axionite ammo, adds +3 to the action AND move cooldown of any unit directly hit. This is a stun — can completely shut down enemy builder bots.
+
+Breach
+
+HP: 60 | Base cost: 30 Ti + 10 refined axionite | Scale: +10%
+Fires in a 180° cone in its facing direction.
+Damage: 40 direct + 20 splash to all 8 surrounding tiles.
+Reload: 1 round.
+Ammo per shot: 5 (refined axionite only).
+Vision radius²: 10 | Attack radius²: 5 (short range but devastating).
+WARNING: splash damages your own buildings (friendly fire). Does not damage itself.
+
+Launcher
+
+HP: 30 | Base cost: 20 Ti | Scale: +10%
+No facing direction, no ammo.
+Picks up an adjacent allied builder bot and throws it to any bot-passable tile within range.
+Reload: 1 round.
+Vision/throw radius²: 26.
+Extremely powerful for rapid deployment — skip the entire road-building process.
+c.build_launcher(pos) and c.launch(bot_pos, target_pos)
+
+
+Markers & Unit Communication
+Since each unit has a completely isolated Python environment, global variables are NOT shared between units. Markers are the ONLY way units can communicate.
+Patterns:
+
+Scouting: a builder bot writes an enemy position as a marker value near the core, other units read it.
+Build orders: encode a state machine flag (e.g. marker value 1 = "build harvesters", 2 = "build turrets").
+Territory claims: mark a tile as "this ore is claimed" so other builder bots don't duplicate work.
+Counting: place a marker with a round number or counter to coordinate timing.
+
+Reading a marker:
+pythonbuilding_id = c.get_tile_building_id(pos)
+if building_id is not None:
+    if c.get_entity_type(building_id) == EntityType.MARKER:
+        value = c.get_marker_value(building_id)
+
+Computation Limits
+
+Each unit gets 2ms of CPU time per round.
+There's a buffer equal to 5% of the limit. Overages are drawn from the buffer; savings refill it (capped at 5%).
+If you exceed both your 2ms and buffer, execution is interrupted mid-round. run() starts fresh next round — you do NOT resume.
+Memory limit: 1 GB per bot process.
+Only Python standard library modules. No numpy, scipy, pandas, etc.
+Local cambc run does NOT enforce time limits. Use cambc test-run for real hardware testing.
+You can check how long you've been running: c.get_cpu_time_elapsed() returns microseconds.
+
+
+Entity IDs & How to Query the World
+Every entity has a unique integer ID. You always use IDs to query properties:
+python# Get all entities near this unit
+for eid in c.get_nearby_entities():
+    etype = c.get_entity_type(eid)
+    pos = c.get_position(eid)
+    hp = c.get_hp(eid)
+    team = c.get_team(eid)
+Key query methods:
+
+c.get_nearby_entities(dist_sq) — IDs of all entities within dist_sq (defaults to vision radius)
+c.get_nearby_buildings(dist_sq) — buildings only
+c.get_nearby_units(dist_sq) — units only
+c.get_nearby_tiles(dist_sq) — positions of all tiles in range
+c.get_tile_env(pos) — returns Environment enum (EMPTY, WALL, ORE_TITANIUM, ORE_AXIONITE)
+c.get_tile_building_id(pos) — returns building ID on that tile or None
+c.get_tile_builder_bot_id(pos) — returns builder bot ID on that tile or None
+c.is_tile_passable(pos) — can a friendly builder bot stand here?
+c.is_tile_empty(pos) — no building and not a wall?
+c.is_in_vision(pos) — within this unit's vision radius?
+
+Map info:
+
+c.get_map_width() and c.get_map_height()
+c.get_current_round() — current round number (starts at 1)
+c.get_global_resources() — returns (titanium, axionite) tuple for your team
+c.get_scale_percent() — your cost multiplier as a percentage
+
+
+All Imports and Types
+pythonfrom cambc import Controller, Direction, EntityType, Environment, Position, ResourceType, Team, GameConstants, GameError
+Or simply from cambc import *.
+Direction enum
+NORTH, NORTHEAST, EAST, SOUTHEAST, SOUTH, SOUTHWEST, WEST, NORTHWEST, CENTRE
+Methods on Direction:
+
+d.delta() — returns (dx, dy). North = (0, -1), East = (1, 0).
+d.rotate_left() — 45° counterclockwise
+d.rotate_right() — 45° clockwise
+d.opposite() — 180° flip
+
+Position named tuple
+pythonpos = Position(x, y)
+pos.add(Direction.NORTH)         # new Position
+pos.distance_squared(other_pos)  # int
+pos.direction_to(other_pos)      # Direction (closest 45° approximation)
+EntityType enum
+BUILDER_BOT, CORE, GUNNER, SENTINEL, BREACH, LAUNCHER, CONVEYOR, SPLITTER, ARMOURED_CONVEYOR, BRIDGE, HARVESTER, FOUNDRY, ROAD, BARRIER, MARKER
+Environment enum
+EMPTY, WALL, ORE_TITANIUM, ORE_AXIONITE
+ResourceType enum
+TITANIUM, RAW_AXIONITE, REFINED_AXIONITE
+Team enum
+Team.A, Team.B
+
+Complete Controller API
+Unit self-info
+pythonc.get_team()                  # your team
+c.get_position()              # your Position
+c.get_id()                    # your entity ID
+c.get_action_cooldown()       # must be 0 to act
+c.get_move_cooldown()         # must be 0 to move (builder bots only)
+c.get_hp()                    # your current HP
+c.get_max_hp()                # your max HP
+c.get_entity_type()           # what kind of unit are you
+c.get_vision_radius_sq()      # your vision radius squared
+c.get_cpu_time_elapsed()      # microseconds used this round
+Entity info (pass an ID, or omit for self)
+pythonc.get_team(id)
+c.get_position(id)
+c.get_hp(id)
+c.get_max_hp(id)
+c.get_entity_type(id)
+c.get_direction(id)           # facing direction (conveyors, turrets)
+c.get_vision_radius_sq(id)
+Turret-specific
+pythonc.get_ammo_amount()           # how much ammo this turret has
+c.get_ammo_type()             # ResourceType or None
+c.get_gunner_target()         # Position or None (gunners only)
+Building-specific
+pythonc.get_bridge_target(id)       # Position this bridge outputs to
+c.get_stored_resource(id)     # ResourceType or None
+Movement (builder bots only)
+pythonc.can_move(direction)         # bool
+c.move(direction)             # raises GameError if illegal
+Building actions (requires action cooldown == 0)
+python# Directional buildings:
+c.can_build_conveyor(pos, direction)
+c.build_conveyor(pos, direction)       # returns new entity ID
+
+c.can_build_splitter(pos, direction)
+c.build_splitter(pos, direction)
+
+c.can_build_armoured_conveyor(pos, direction)
+c.build_armoured_conveyor(pos, direction)
+
+c.can_build_gunner(pos, direction)
+c.build_gunner(pos, direction)
+
+c.can_build_sentinel(pos, direction)
+c.build_sentinel(pos, direction)
+
+c.can_build_breach(pos, direction)
+c.build_breach(pos, direction)
+
+# Bridge (takes a target position):
+c.can_build_bridge(pos, target)
+c.build_bridge(pos, target)
+
+# Non-directional:
+c.can_build_harvester(pos)
+c.build_harvester(pos)
+
+c.can_build_road(pos)
+c.build_road(pos)
+
+c.can_build_barrier(pos)
+c.build_barrier(pos)
+
+c.can_build_foundry(pos)
+c.build_foundry(pos)
+
+c.can_build_launcher(pos)
+c.build_launcher(pos)
+Heal and destroy
+pythonc.can_heal(pos)
+c.heal(pos)               # heals all friendlies on tile by 10 HP; costs action cooldown
+
+c.can_destroy(pos)
+c.destroy(pos)            # destroys allied building; FREE (no cooldown)
+Self-destruct and resign
+pythonc.self_destruct()         # destroys self, 20 damage to tile; code stops here
+c.resign()                # forfeits the entire game; code stops here
+Markers
+pythonc.can_place_marker(pos)
+c.place_marker(pos, value)    # value is uint32; free, no action cooldown; max 1/round
+c.get_marker_value(id)
+Combat (turrets)
+pythonc.can_fire(target_pos)
+c.fire(target_pos)
+
+c.can_launch(bot_pos, target_pos)   # launcher only
+c.launch(bot_pos, target_pos)
+Core
+pythonc.can_spawn(pos)
+c.spawn_builder(pos)      # spawns builder bot on core tile; costs action cooldown; returns ID
+Cost getters (all return (titanium, axionite) tuples, scaled)
+pythonc.get_builder_bot_cost()
+c.get_conveyor_cost()
+c.get_splitter_cost()
+c.get_bridge_cost()
+c.get_armoured_conveyor_cost()
+c.get_harvester_cost()
+c.get_road_cost()
+c.get_barrier_cost()
+c.get_foundry_cost()
+c.get_gunner_cost()
+c.get_sentinel_cost()
+c.get_breach_cost()
+c.get_launcher_cost()
+Debug (output saved to replay)
+pythonc.draw_indicator_line(pos_a, pos_b, r, g, b)
+c.draw_indicator_dot(pos, r, g, b)
+
+Bot Structure — The Skeleton
+Every bot is a single Python file with a Player class. The engine creates one Player instance per unit and calls run(controller) every round.
+pythonfrom cambc import Controller, Direction, EntityType, Environment, Position
+
+class Player:
+    def __init__(self):
+        # Instance variables here persist between rounds FOR THIS UNIT ONLY
+        # No sharing between units — each has its own isolated instance
+        self.round_count = 0
+
+    def run(self, c: Controller) -> None:
+        self.round_count += 1
+        etype = c.get_entity_type()
+
+        if etype == EntityType.CORE:
+            self._run_core(c)
+        elif etype == EntityType.BUILDER_BOT:
+            self._run_builder(c)
+        elif etype == EntityType.GUNNER:
+            self._run_gunner(c)
+        # etc.
+
+    def _run_core(self, c):
+        pass
+
+    def _run_builder(self, c):
+        pass
+
+    def _run_gunner(self, c):
+        pass
+
+Complete Starter Bot (from docs)
+pythonimport random
+from cambc import Controller, Direction, EntityType, Environment, Position
+
+DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
+
+class Player:
+    def __init__(self):
+        self.num_spawned = 0
+
+    def run(self, ct: Controller) -> None:
+        etype = ct.get_entity_type()
+
+        if etype == EntityType.CORE:
+            if self.num_spawned < 3:
+                spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
+                if ct.can_spawn(spawn_pos):
+                    ct.spawn_builder(spawn_pos)
+                    self.num_spawned += 1
+
+        elif etype == EntityType.BUILDER_BOT:
+            # Build a harvester on any adjacent ore
+            for d in Direction:
+                check_pos = ct.get_position().add(d)
+                if ct.can_build_harvester(check_pos):
+                    ct.build_harvester(check_pos)
+                    break
+
+            # Move randomly, laying road first
+            move_dir = random.choice(DIRECTIONS)
+            move_pos = ct.get_position().add(move_dir)
+            if ct.can_build_road(move_pos):
+                ct.build_road(move_pos)
+            if ct.can_move(move_dir):
+                ct.move(move_dir)
+
+            # Place a marker recording current round
+            marker_pos = ct.get_position().add(random.choice(DIRECTIONS))
+            if ct.can_place_marker(marker_pos):
+                ct.place_marker(marker_pos, ct.get_current_round())
+
+CLI Commands
+bashpip install cambc                          # install
+cambc starter                              # scaffold project
+cambc run bot_a bot_b                      # local match (no time limits)
+cambc run bot_a bot_b --watch              # local match + open visualiser
+cambc run bot_a bot_b --seed 42            # fixed seed
+cambc run bot_a bot_b maps/custom.map26    # custom map
+cambc watch replay.replay26               # view local replay
+cambc watch --match abc123                # view platform match
+cambc map-editor                           # open map editor
+cambc login                                # authenticate with platform
+cambc submit ./my_bot/                     # submit to ladder
+cambc status                               # see your rating/rank
+cambc test-run my_bot opponent             # remote match with real time limits
+cambc unrated <opponent_id>               # challenge without rating impact
+cambc matches                              # view match history
+cambc match <match_id>                    # view specific match details
+
+Match Format
+
+Each match is best-of-5 games.
+Each game uses a different map and random seed.
+The team winning more games wins the match.
+Ladder uses Glicko-2 rating. New teams seed at 1500.
+Ratings update every 10 minutes based on scheduled matches.
+Test runs and unrated matches don't affect your rating.
+Rate limit: max 10 test/unrated matches per 5 minutes.
+
+
+Key Strategic Insights
+
+Harvester cost scales up fast — each one is 80 Ti base + 10% scale. Build them efficiently, not randomly.
+Cost scaling is additive, not multiplicative — 10 builder bots = +100% scale (2x costs), not 2^10.
+Destroyed entities remove their scale contribution — cleaning up dead weight matters.
+Conveyors carry resources to enemies — don't accidentally feed the enemy with a poorly placed conveyor near the border.
+Launchers let bots skip road building — throw a builder directly to an ore deposit, massive time save.
+Sentinel with refined axionite stuns enemies — +3 cooldown can lock down builder bots completely.
+Markers are your only comms — coordinate everything through them.
+2ms is tight — avoid O(n²) algorithms over all entities. Use get_nearby_entities with a limited radius.
+The map is symmetric — you can infer where enemy ore deposits are by reflecting your own map observations.
+Tiebreaker is refined axionite — if you can't destroy the enemy core, focus on building a foundry pipeline for axionite.
+"""

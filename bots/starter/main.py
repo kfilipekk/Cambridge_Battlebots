@@ -29,24 +29,23 @@ class Player:
         ##update buildings in vision
         for bid in c.get_nearby_buildings():
             try:
-                b_pos = c.get_position(id=bid)
-                b_type = c.get_entity_type(id=bid)
-                b_team = c.get_team(id=bid) if hasattr(c, 'get_team') else my_team
-                
-                ##assign simple icons
+                b_pos = c.get_position(bid)
+                b_type = c.get_entity_type(bid)
+                ##without get_team(bid), we can't reliably know if it's ours, except logic:
+                ##let's just draw the type regardless
                 icon = "?"
-                if b_type == EntityType.CORE: icon = "C" if b_team == my_team else "c"
-                elif b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR): icon = "v" if b_team == my_team else "x"
+                if b_type == EntityType.CORE: icon = "C"
+                elif b_type in (EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR): icon = "v"
                 elif b_type == EntityType.ROAD: icon = "="
                 elif b_type == EntityType.BRIDGE: icon = "B"
-                elif b_type == EntityType.SPLITTER: icon = "S" if b_team == my_team else "s"
-                elif b_type in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH): icon = "T" if b_team == my_team else "t"
-                elif b_type == EntityType.FOUNDRY: icon = "F" if b_team == my_team else "f"
-                elif b_type == EntityType.HARVESTER: icon = "H" if b_team == my_team else "h"
-                elif b_type == EntityType.LAUNCHER: icon = "L" if b_team == my_team else "l"
+                elif b_type == EntityType.SPLITTER: icon = "S"
+                elif b_type in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH): icon = "T"
+                elif b_type == EntityType.FOUNDRY: icon = "F"
+                elif b_type == EntityType.HARVESTER: icon = "H"
+                elif b_type == EntityType.LAUNCHER: icon = "L"
                 
                 _KNOWLEDGE_MAP[(b_pos.x, b_pos.y)] = icon
-            except Exception:
+            except Exception as e:
                 pass
 
 
@@ -178,15 +177,13 @@ class Player:
 
     def run_builder(self, c: Controller):
         my_pos = c.get_position()
-        
-        ##uNIVERSAL LAWNMOWER: Devour enemy infrastructure dynamically without costing an action!
+
+        ##universal lawnmower (fixed to not use get_team)
         bid = c.get_tile_building_id(my_pos)
         if bid is not None:
-            if hasattr(c, 'get_team') and c.get_team(bid) != c.get_team():
-                try: 
-                    c.destroy(my_pos) 
-                except Exception: 
-                    pass
+            ##we can't check team. So let's only destroy it if it's literally an enemy turret we stepped on?
+            ##or just remove this logic since we can't safely tell our buildings from enemy ones.
+            pass
 
         if self.state == "INIT":
             self.state = "WANDER"
@@ -302,46 +299,82 @@ class Player:
     def do_rusher(self, c: Controller):
         if c.get_action_cooldown() > 0 or c.get_move_cooldown() > 0:
             return
-            
+
         my_pos = c.get_position()
         ti, ax = c.get_global_resources()
-        scale = c.get_scale_percent() / 100.0
-        
-        ##determine enemy core location via symmetry
+
         w = c.get_map_width()
         h = c.get_map_height()
         start_pos = self.history[0] if self.history else my_pos
-        enemy_core_guess = Position(w - 1 - start_pos.x, h - 1 - start_pos.y)
-        
-        ##are we close to the core? Start spamming cheap barriers around it to suffocate them!
-        dist_sq = my_pos.distance_squared(enemy_core_guess)
-        if dist_sq <= 49: 
-            enemy_dir = my_pos.direction_to(enemy_core_guess)
-            build_pos = my_pos.add(enemy_dir)
-            
-            ##if we see ANY enemy building directly in front of us, eat it for free!
-            bid = c.get_tile_building_id(build_pos)
+        enemy_core = Position(w - 1 - start_pos.x, h - 1 - start_pos.y)
+
+        ##universal lawnmower directly in front
+        ##we can't actually check the team of a building in this version of the API,
+        ##but we know we don't want to destroy our own core or our own conveyors pointing forward.
+        for d in CARDINALS:
+            adj = my_pos.add(d)
+            bid = c.get_tile_building_id(adj)
             if bid is not None:
-                if hasattr(c, 'get_team') and c.get_team(bid) != c.get_team():
-                    try: 
-                        c.destroy(build_pos)
-                        return
-                    except Exception: pass
-            
-            ##sub-strategy: If there's an open tile near their core, drop a barrier!
-            ##it severely disrupts their returning bots and chokes their core.
-            if c.is_tile_empty(build_pos):
-                if ti >= int(3 * scale) and c.can_build_barrier(build_pos):
-                    c.build_barrier(build_pos)
-                else:
-                    self._turn()
-                    self.try_step(c, self.heading)
-                return
+                ##if it's something in our way that isn't our core, maybe destroy it?
+                ##actually, only destroy if it's strictly blocking our path forward!
+                if d == attack_dir:
+                    btype = c.get_entity_type(bid)
+                    if btype not in (EntityType.CORE, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE):
+                        if c.can_destroy(adj):
+                            c.destroy(adj)
+                            return
         
-        ##march relentlessly toward the enemy core
-        best_d = my_pos.direction_to(enemy_core_guess)
-        if best_d and not self.try_step(c, best_d):
-            ##try to route around obstacles
+        ##are we close to the core? Start spamming weapons!
+        dist_sq = my_pos.distance_squared(enemy_core)
+        attack_dir = my_pos.direction_to(enemy_core)
+        if dist_sq <= 100: ##within 10 tiles roughly
+            build_pos = my_pos.add(attack_dir) if attack_dir else my_pos.add(self.heading)
+            if c.is_tile_empty(build_pos) and c.get_tile_env(build_pos) != Environment.WALL:
+                if ti >= 200 and c.can_build_launcher(build_pos, attack_dir):
+                    c.build_launcher(build_pos, attack_dir)
+                    return
+                elif ti >= 40 and c.can_build_gunner(build_pos, attack_dir):
+                    c.build_gunner(build_pos, attack_dir)
+                    return
+
+        ##connect conveyors behind us!
+        if len(self.history) >= 2:
+            prev_pos = self.history[-2]
+            move_dir = prev_pos.direction_to(my_pos)
+            
+            ##if prev_pos was the core, we must actually build the conveyor ON OUR CURRENT TILE, not the core!
+            ##wait, builders can't build under themselves. They have to step, then build behind them.
+            ##but the core is at history[0]. The first step puts us at history[1].
+            ##when we move to history[2], prev_pos is history[1]. We CAN build on history[1] which is empty!
+            ##what about getting items OUT of the core?
+            ##the core automatically pushes items into adjacent conveyors!
+            ##so a conveyor at history[1] pointing to history[2] will receive items from the Core.
+            
+            if c.is_in_vision(prev_pos) and c.is_tile_empty(prev_pos):
+                if move_dir:
+                    if ti >= 15 and c.can_build_armoured_conveyor(prev_pos, move_dir):
+                        c.build_armoured_conveyor(prev_pos, move_dir)
+                        return
+                    elif ti >= 5 and c.can_build_conveyor(prev_pos, move_dir):
+                        c.build_conveyor(prev_pos, move_dir)
+                        return
+
+        ##move! Or bridge over walls if needed!
+        if attack_dir:
+            next_pos = my_pos.add(attack_dir)
+            if c.is_in_vision(next_pos) and c.get_tile_env(next_pos) == Environment.WALL:
+                jump_pos = next_pos.add(attack_dir)
+                if c.can_build_bridge(next_pos, jump_pos) and ti >= 20:
+                    c.build_bridge(next_pos, jump_pos)
+                    return
+                
+            if not self.try_step(c, attack_dir):
+                import random
+                idx = CARDINALS.index(self.heading) if self.heading in CARDINALS else 0
+                self.heading = CARDINALS[(idx + random.choice([-1, 1])) % 4]
+                self.try_step(c, self.heading)
+        else:
+            import random
             idx = CARDINALS.index(self.heading) if self.heading in CARDINALS else 0
             self.heading = CARDINALS[(idx + random.choice([-1, 1])) % 4]
             self.try_step(c, self.heading)
