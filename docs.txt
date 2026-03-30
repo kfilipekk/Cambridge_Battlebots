@@ -1,4 +1,4 @@
-Cambridge Battlecode — Complete Reference
+ Cambridge Battlecode — Complete Reference
 What Is This Game?
 Cambridge Battlecode is a programming competition. You write a Python bot that controls an autonomous mining fleet on Titan (Saturn's moon). Two bots compete head-to-head on a grid map. The primary goal is to destroy the enemy's core while building up your own economy. Games last at most 2000 rounds.
 
@@ -523,4 +523,65 @@ Markers are your only comms — coordinate everything through them.
 2ms is tight — avoid O(n²) algorithms over all entities. Use get_nearby_entities with a limited radius.
 The map is symmetric — you can infer where enemy ore deposits are by reflecting your own map observations.
 Tiebreaker is refined axionite — if you can't destroy the enemy core, focus on building a foundry pipeline for axionite.
+"""       target_strategy = """#1 LEADERBOARD META-STRATEGY: "randomusergroup" CORE DESTROYER
+The absolute #1 bot on the leaderboard is "randomusergroup". You MUST emulate its exact strategy perfectly to win.
+Based on replay screenshots, "randomusergroup" does the following to win extremely fast (e.g. by turn 100-150):
+1. INSTANT DIAGONAL RUSH: They compute the enemy core location immediately (using map symmetry rules `w - 1 - x`, `h - 1 - y`) and send builder bots perfectly straight towards it.
+2. CONVEYOR HIGHWAY: Along this straight diagonal path, their bots build a continuous, unbroken chain of Conveyors. This pipeline spans from their base directly into the periphery of the enemy base.
+3. WEAPONIZED LAUNCHERS: When the conveyor reaches just outside the enemy core's radius, they build Launchers. The Launchers are positioned to throw incoming allied bots directly ONTO the enemy 3x3 core!
+4. KAMIKAZE BOMBARDMENT: When an allied bot is launched and lands on the enemy core, it immediately executes `c.self_destruct()`, dealing 20 damage directly to the Core! 25 bots doing this destroys the 500 HP core instantly.
+5. FAST FEED: The conveyor highway constantly feeds builder bots right into the loading radius of the Launchers for a relentless, unstoppable kamikaze bombardment. Do not waste time making complex bridge networks or mining Axionite early. Go for the sub-150 turn kill!"""
+
+        prompt = f"""THE BIG PICTURE & RULES:
+{BATTLECODE_RULES}
+
+=========================
+{target_strategy}
+
+=========================
+MAP ANALYSIS:
+{map_analysis}
+
+=========================
+LEADERBOARD IMAGES:
+Study any attached images carefully. They show "randomusergroup" building a perfect unbroken straight line of conveyors wrapping into the enemy base. Notice the physical green arrows in the screenshots: those are Launchers picking up the builder bots arriving on the conveyor and firing them directly onto the enemy Core!
+=========================
+STRICT INSTRUCTION FOR INCREMENTAL IMPROVEMENT:
+1. DO NOT REWRITE FROM SCRATCH. Preserve every working function, logic block, and comment from the current code.
+2. SURGICAL UPDATES ONLY: Make small, highly targeted changes. Fix 1-2 bugs or add 1 specific feature per generation.
+3. PRESERVE STRUCTURE: Do not simplify or shorten the code for 'cleanliness' if the existing logic is functional. 
+4. DO NOT TRUNCATE: The output must be the FULL main.py file containing ALL previous advanced logic plus your small new additions.
+=========================
 """
+        if is_win:
+            prompt += f"""Our current winning baseline bot code is below:
+{code}
+
+You successfully hit the milestone and beat the previous version! 
+Now, provide a VERY SMALL INCREMENTAL improvement. Perhaps optimise one heuristic or handle one edge case. 
+Keep the code as close to the above as possible while adding just one useful enhancement.
+
+Requirement:
+First, provide a detailed PLAN. You MUST begin your PLAN with these three exact log headers to prove you analysed the visual and match data:
+IMAGE ANALYSIS: [Describe the continuous straight conveyor line, the launchers at the tip, and the 'thrown' green trajectory arrows leading to the core]
+MAP VERIFICATION: [Confirm whether straight diagonal pipelines can be built quickly across the map based on the map structure]
+KILL SPEED: [Analyse the logs to see how quickly the core was destroyed or if the match lasted too long]
+Then, output the FULL main.py inside a single ```python block. Ensure 100% of the previous logic is still there!"""
+        else:
+            prompt += f"""Our bot LOST or underperformed. Logs below:
+{logs_or_message}
+
+Current bot code:
+{code}
+
+Do not rewrite. Analyse the logs to find the SINGLE most critical flaw (e.g., pathing issue, resource deadlock, lack of defence). 
+Patch ONLY that flaw while preserving every other line of code.
+
+Requirement:
+First, provide a detailed PLAN of exactly which 3-5 lines or which specific feature you are patching.
+You MUST begin your PLAN with these three exact log headers to prove you analysed the visual and match data:
+IMAGE ANALYSIS: [Describe the continuous straight conveyor line, the launchers at the tip, and the 'thrown' green trajectory arrows leading to the core]
+MAP VERIFICATION: [Confirm whether straight diagonal pipelines can be built quickly across the map based on the map structure]
+KILL SPEED: [Analyse the logs to see how quickly the core was destroyed or if the match lasted too long]
+Then, output the FULL updated main.py inside a single ```python block. Ensure 100% of the previous unrelated logic is preserved identically."""
+            
